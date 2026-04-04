@@ -103,14 +103,14 @@ runcmd(struct cmd *cmd)
       panic("pipe");
     if(fork1() == 0){
       close(1);
-      dup(p[1]);
+      dup(p[1]);  // 重定向输出到 p[1]
       close(p[0]);
       close(p[1]);
       runcmd(pcmd->left);
     }
     if(fork1() == 0){
       close(0);
-      dup(p[0]);
+      dup(p[0]);  // 重定向输入到 p[0]，当程序 read 从 &1 读的时候，如果没有输入会阻塞等待
       close(p[0]);
       close(p[1]);
       runcmd(pcmd->right);
