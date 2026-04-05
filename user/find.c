@@ -48,7 +48,7 @@ void find(char *path)
     case T_FILE:
         if (!strcmp(t_file_name, fmtname(path)))
         {
-            printf("%s \n", path);
+            printf("%s\n", path);
         }
         break;
 
