@@ -409,8 +409,8 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   int got_null = 0;
 
   while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
+    va0 = PGROUNDDOWN(srcva);       // 虚拟空间地址的页起始地址
+    pa0 = walkaddr(pagetable, va0); // 找到了物理页
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (srcva - va0);
