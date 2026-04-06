@@ -149,6 +149,7 @@ freeproc(struct proc *p)
   p->chan = 0;
   p->killed = 0;
   p->xstate = 0;
+  p->mask = 0;
   p->state = UNUSED;
 }
 
