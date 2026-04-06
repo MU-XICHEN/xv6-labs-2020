@@ -696,3 +696,16 @@ procdump(void)
     printf("\n");
   }
 }
+
+uint64 knumOfUsedP(void) {
+  struct proc *p;
+  uint64 unused_num = 0;
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if(p->state != UNUSED) {
+      unused_num++;
+    } 
+    release(&p->lock);
+  }
+  return unused_num;
+}
