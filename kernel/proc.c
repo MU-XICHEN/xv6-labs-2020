@@ -34,13 +34,20 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
+
+      // proc 本身的内容存在于 kernel data 段中，通过 Direct Mapping
+      // 这里给每个 proc 在 High Memory 的部分再通过 Page Table Mapping 的方式映射一个内核栈以及guard page
+      char *pa = kalloc(); 
       if(pa == 0)
         panic("kalloc");
       uint64 va = KSTACK((int) (p - proc));
       kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
       p->kstack = va;
   }
+
+  // 这里还没有进程运行，但是因为之前 kvminithart 的执行，到procinit 期间，TLB 已经加载了 PT 缓存了
+  // 上述部分因为实际 VA 和 PA 是一致的，缓存不更新也不会出问题
+  // 但是后续，会访问 TRAMPOLINE 以及调度用户进程，因此就要更新了
   kvminithart();
 }
 
@@ -208,6 +215,7 @@ uchar initcode[] = {
 };
 
 // Set up first user process.
+// 只是初始化了一个用户进程（执行内容是 initCode 中的内容），此时并不会运行，因为还没有被 kernel 调度
 void
 userinit(void)
 {

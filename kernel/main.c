@@ -22,6 +22,11 @@ main()
     kinit();         // physical page allocator
     kvminit();       // create kernel page table
     kvminithart();   // turn on paging
+
+    // 以上都是 direct mapping，之后 kernel 访问地址时才会进行 page table mapping
+    // kernel 本身也就是一个根进程的概念，也有空间地址的概念，在链接的时候，以一个空间地址的方式进行链接
+    // 在刚跑起来的时候是以物理地址空间为地址空间，data、text 等内容根据 kernel.ld 设置在物理地址的相应位置
+    // 在设置页表之后再根据页表进行地址的转化
     procinit();      // process table
     trapinit();      // trap vectors
     trapinithart();  // install kernel trap vector

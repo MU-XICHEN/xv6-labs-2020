@@ -44,6 +44,9 @@ kvminit()
 
   // map the trampoline for trap entry/exit to
   // the highest virtual address in the kernel.
+
+  // 给物理地址 trampoline 映射了一个虚拟内存空间
+  // 即，后续内核本身对 trampoline 虚拟地址的访问会通过 MMU 非直接映射的方式映射到物理地址
   kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 }
 
@@ -52,7 +55,9 @@ kvminit()
 void
 kvminithart()
 {
-  w_satp(MAKE_SATP(kernel_pagetable));
+  // 设置之后，CPU 硬件（MMU）开始接管所有地址访问
+  // CPU 在访问地址的时候会自动根据页表，自动将 VA 转化为 PA
+  w_satp(MAKE_SATP(kernel_pagetable)); 
   sfence_vma();
 }
 

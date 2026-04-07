@@ -9,6 +9,8 @@
 
 static int loadseg(pde_t *pgdir, uint64 addr, struct inode *ip, uint offset, uint sz);
 
+
+// 原来的进程对象被 kernel 复用，但是分配了新的物理内存，因此期间也重新修改了页表映射
 int
 exec(char *path, char **argv)
 {
