@@ -282,12 +282,12 @@ freewalk(pagetable_t pagetable)
   // there are 2^9 = 512 PTEs in a page table.
   for(int i = 0; i < 512; i++){
     pte_t pte = pagetable[i];
-    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){ // 非叶节点
       // this PTE points to a lower-level page table.
       uint64 child = PTE2PA(pte);
       freewalk((pagetable_t)child);
       pagetable[i] = 0;
-    } else if(pte & PTE_V){
+    } else if(pte & PTE_V){                                 // 叶节点
       panic("freewalk: leaf");
     }
   }
@@ -444,4 +444,44 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+void print_omit_symbol(int level) {
+  int test_level = level + 1;
+  for (int i = 0; i < test_level; i++)
+  {
+    printf("..");
+    if (i != test_level - 1)
+    {
+      printf(" ");
+    }
+  }
+}
+
+void print_pte(pte_t pte, int level, int index) {
+  uint64 pa = PTE2PA(pte);
+  print_omit_symbol(level);
+  printf("%d: pte %p pa %p\n", index, pte, pa);
+}
+
+void vmprint_inner(pagetable_t pagetable, int level){
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){ // 非叶节点
+      // this PTE points to a lower-level page table.
+      print_pte(pte, level, i);
+      uint64 child = PTE2PA(pte);
+      vmprint_inner((pagetable_t)child, level + 1);
+    } else if(pte & PTE_V){                                // 叶节点
+      print_pte(pte, level, i);
+    } else {                                               // 未使用节点
+      continue;
+    }
+  }
+}
+
+void vmprint(pagetable_t pagetable) {
+  printf("page table %p\n", pagetable);
+  vmprint_inner(pagetable, 0);
 }
