@@ -257,10 +257,12 @@ void proc_free_kernel_pagetable(struct proc *p) {
   uvmunmap(k_pagetable, CLINT, 0x10000 / PGSIZE, 0);
   uvmunmap(k_pagetable, PLIC, 0x400000 / PGSIZE, 0);
   uvmunmap(k_pagetable, KERNBASE, PGROUNDUP((uint64)etext-KERNBASE) / PGSIZE, 0);
-  uvmunmap(k_pagetable, (uint64)etext, PGROUNDUP(PHYSTOP-(uint64)etext) / PGSIZE, 0); // todo: transfer
+  uvmunmap(k_pagetable, (uint64)etext, PGROUNDUP(PHYSTOP-(uint64)etext) / PGSIZE, 0);
   uvmunmap(k_pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(k_pagetable, p->kstack, 1, 0);
 
+  // 以上只是将所有叶子节点和物理内存的映射 unmap了，现在三级页表还是存在的
+  freewalk(k_pagetable); // 回收三级页表
 }
 
 // Free a process's page table, and free the

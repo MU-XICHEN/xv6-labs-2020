@@ -84,19 +84,21 @@ walk(pagetable_t pagetable, uint64 va, int alloc) // 返回的实际就是页表
     if(*pte & PTE_V) {
       pagetable = (pagetable_t)PTE2PA(*pte);
     } else {
-      // PTE 不存在
-      if(!alloc || (pagetable = (pde_t*)kalloc()) == 0)
-      // 不允许创建或者允许，但是创建失败的情况，则返回
+      // 对应的 PTE 不存在时，如果允许分配则重新构建新的 pagetable，也作为下一级页表的地址
+      if(!alloc || (pagetable = (pde_t*)kalloc()) == 0) {
+        // 不分配，或者允许，但是创建失败的情况，则返回 0
         return 0;
-      // 创建 pagetable，并且将 pagetable 的地址用于创建 PTE
+      }
+
       memset(pagetable, 0, PGSIZE);
       *pte = PA2PTE(pagetable) | PTE_V;
     }
-    // 循环结束，使得 pagetable 指向下一级
+    // 循环的目的是使得 pagetable 指向第三级页表，其内部 PTE 包含实际的 PPN
+    // 如果 va 对应的 PTE 不存在的话，optionally 进行创建
   }
 
-  // 现在 pagetable 指向第三级页表，其内部 PTE 包含实际的 PPN
-  return &pagetable[PX(0, va)];
+  // 现在 pagetable 指向第三级页表
+  return &pagetable[PX(0, va)]; // 最终返回的是 目标PTE 的地址
 }
 
 // Look up a virtual address, return the physical address,
@@ -210,7 +212,7 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       uint64 pa = PTE2PA(*pte);
       kfree((void*)pa);
     }
-    *pte = 0;
+    *pte = 0; // 相当于只将第三级的 PTE 置空，从而消除了映射
   }
 }
 
@@ -316,7 +318,7 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 {
   // sz 是用户已使用最高虚拟内存的边界，uvmunmap 取消映射的同时就回收对应的物理页
   if(sz > 0)
-    uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 1);
+    uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 1); // 将 虚拟内存 0 到 sz 范围之内的映射都消除，并回收物理内存
   freewalk(pagetable); // 确保叶节点都回收，然后回收页表
 }
 
