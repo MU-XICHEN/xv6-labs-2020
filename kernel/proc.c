@@ -15,6 +15,7 @@ struct proc *initproc;
 int nextpid = 1;
 struct spinlock pid_lock;
 
+extern char etext[];
 extern void forkret(void);
 static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
@@ -35,14 +36,19 @@ procinit(void)
       // Map it high in memory, followed by an invalid
       // guard page.
 
-      // proc 本身的内容存在于 kernel data 段中，通过 Direct Mapping
-      // 这里给每个 proc 在 High Memory 的部分再通过 Page Table Mapping 的方式映射一个内核栈以及guard page
-      char *pa = kalloc(); 
+      // proc 本身的内容存在于 kernel data 段中
+      // 每个进程的内核栈存在于新分配的 free page 中
+      // 因此是这个 free page 在 kernel_pagetable 中存在映射
+      // 这样，在进程进入内核态的时候，可以通过 kstack 存的内容，访问到实际的page中
+      // 当前，内核态中的映射关系统一通过 kernel_pagetable 来访问
+      // 后续，当每个进程拥有自己的 内核 pagetable 的时候，意味着进入内核态会使用该进程提供的 kernel pagetable
+      // 因此也要保证，通过这个 pagetable 可以访问到内核栈的物理内存
+      char *pa = kalloc();
       if(pa == 0)
         panic("kalloc");
       uint64 va = KSTACK((int) (p - proc));
       kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+      p->kstack = va; // kstack 存的是以 kernel_pagetable 为映射关系的虚拟地址
   }
 
   // 这里还没有进程运行，但是因为之前 kvminithart 的执行，到procinit 期间，TLB 已经加载了 PT 缓存了
@@ -122,7 +128,11 @@ found:
 
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
-  if(p->pagetable == 0){
+  // An kernel page table (identical to the existing global kernel page table)
+  // todo：疑问-可以直接使用 p->trapframe->kernel_satp 吗
+  p->kernel_pagetable = proc_kernel_pagetable(p);
+  
+  if(p->pagetable == 0 || p->kernel_pagetable == 0){
     freeproc(p);
     release(&p->lock);
     return 0;
@@ -148,6 +158,8 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if (p->kernel_pagetable)
+    proc_free_kernel_pagetable(p);
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -157,6 +169,48 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+}
+
+pagetable_t proc_kernel_pagetable(struct proc *p) {
+  pagetable_t pagetable;
+
+  // An empty page table.
+  pagetable = uvmcreate();
+  if(pagetable == 0)
+    return 0;
+
+   // uart registers
+  kvm_copymap(pagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+
+  // virtio mmio disk interface
+  kvm_copymap(pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+
+  // CLINT
+  kvm_copymap(pagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+
+  // PLIC
+  kvm_copymap(pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
+  // map kernel text executable and read-only.
+  kvm_copymap(pagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+
+  // map kernel data and the physical RAM we'll make use of.
+  kvm_copymap(pagetable, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+
+  // map the trampoline for trap entry/exit to
+  // the highest virtual address in the kernel.
+
+  // 给物理地址 trampoline 映射了一个虚拟内存空间
+  // 即，后续内核本身对 trampoline 虚拟地址的访问会通过 MMU 非直接映射的方式映射到物理地址
+  kvm_copymap(pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+
+  // kstack 更新，更新为以进程自身的 kernel pagetable 为映射关系的 va
+  uint64 va = KSTACK((int) (p - proc));
+  uint64 pa = kvmpa(va); // 在 procinit 的时候，kstack 已经分配了物理页
+  kvm_copymap(pagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
+
+  return pagetable;
 }
 
 // Create a user page table for a given process,
@@ -192,11 +246,31 @@ proc_pagetable(struct proc *p)
   return pagetable;
 }
 
+
+// free kernel page tables
+void proc_free_kernel_pagetable(struct proc *p) {
+  // 主要是 free 页表占用的 page memory，最终指向的内容不释放
+  pagetable_t k_pagetable = p->kernel_pagetable;
+
+  uvmunmap(k_pagetable, UART0, 1, 0);
+  uvmunmap(k_pagetable, VIRTIO0, 1, 0);
+  uvmunmap(k_pagetable, CLINT, 0x10000 / PGSIZE, 0);
+  uvmunmap(k_pagetable, PLIC, 0x400000 / PGSIZE, 0);
+  uvmunmap(k_pagetable, KERNBASE, PGROUNDUP((uint64)etext-KERNBASE) / PGSIZE, 0);
+  uvmunmap(k_pagetable, (uint64)etext, PGROUNDUP(PHYSTOP-(uint64)etext) / PGSIZE, 0); // todo: transfer
+  uvmunmap(k_pagetable, TRAMPOLINE, 1, 0);
+  uvmunmap(k_pagetable, p->kstack, 1, 0);
+
+}
+
 // Free a process's page table, and free the
 // physical memory it refers to.
 void
 proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
+  // 用户进程所处于的地址空间在 PHYSTOP 到 kernel 结束之间，用户的实际物理页分散在这一片区域中，被 free page list 进行管理
+  // sz 指定的是用户最高已用的虚拟地址的上边界
+  // freewalk 需要保证 All leaf mappings must already have been removed. 否则会 panic
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
@@ -475,13 +549,38 @@ scheduler(void)
     int found = 0;
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
+
+      // 循环持续的消费 RUNNABLE，直到 RUNNING 的进程切回来之后都不再进入 RUNNABLE
+      // 当遍历一圈之后发现没有 RUNNABLE 进程的时候，意味着所有都处于 UNUSED、SLEEPING、ZOMBIE
+      // （不可能进入这里的时候有进程处于 RUNNING）
       if(p->state == RUNNABLE) {
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
-        swtch(&c->context, &p->context);
+
+
+        // 注意，这里并不是直接切到用户态去执行内容，只是切换到了另一个用户进程的内核态
+        // 只有当进程进入内核态之后，才可能发生切换
+        /**
+         * 进程被切换的场景：
+         * 1、主动让出 CPU（yield / sleep）
+         * 2、时间片用完（timer interrupt）：timer interrupt → trap → kernel → yield → scheduler
+         * ...
+         * 以上最终都会通过 sched 切换回当前，意味着进程都进入了自己的内核态
+         */
+
+        // 切换为下一个进程的内核页表，然后再去恢复其上下文，继续以内核态运行
+        w_satp(MAKE_SATP(p->kernel_pagetable)); 
+        sfence_vma();
+
+        swtch(&c->context, &p->context); // 从这里回来的时候，此时就没有 RUNNING 的进程了
+
+        // restore to kernel_pagetable
+        // 意味着，用户进程处于 RUNNING 态的时候，用户进程进入内核态会切换成自己的内核页表
+        // 但是当进程变化状态后，通过 sched swtch 回 scheduler 的时候，就会统一使用 kernel_pagetable 了
+        kvminithart();
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.

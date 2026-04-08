@@ -7,6 +7,7 @@
 
 .globl swtch
 swtch:
+        # 把当前 CPU 寄存器存进 old
         sd ra, 0(a0)
         sd sp, 8(a0)
         sd s0, 16(a0)
@@ -22,6 +23,7 @@ swtch:
         sd s10, 96(a0)
         sd s11, 104(a0)
 
+        # 从 new 中加载内容到寄存器
         ld ra, 0(a1)
         ld sp, 8(a1)
         ld s0, 16(a1)

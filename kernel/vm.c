@@ -74,22 +74,28 @@ kvminithart()
 //   12..20 -- 9 bits of level-0 index.
 //    0..11 -- 12 bits of byte offset within the page.
 pte_t *
-walk(pagetable_t pagetable, uint64 va, int alloc)
+walk(pagetable_t pagetable, uint64 va, int alloc) // 返回的实际就是页表的叶子 pte
 {
   if(va >= MAXVA)
     panic("walk");
 
   for(int level = 2; level > 0; level--) {
-    pte_t *pte = &pagetable[PX(level, va)];
+    pte_t *pte = &pagetable[PX(level, va)]; // PX 获得的是偏移量，pagetable[PX(level, va)] 获得的才是 PTE
     if(*pte & PTE_V) {
       pagetable = (pagetable_t)PTE2PA(*pte);
     } else {
+      // PTE 不存在
       if(!alloc || (pagetable = (pde_t*)kalloc()) == 0)
+      // 不允许创建或者允许，但是创建失败的情况，则返回
         return 0;
+      // 创建 pagetable，并且将 pagetable 的地址用于创建 PTE
       memset(pagetable, 0, PGSIZE);
       *pte = PA2PTE(pagetable) | PTE_V;
     }
+    // 循环结束，使得 pagetable 指向下一级
   }
+
+  // 现在 pagetable 指向第三级页表，其内部 PTE 包含实际的 PPN
   return &pagetable[PX(0, va)];
 }
 
@@ -126,6 +132,15 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
     panic("kvmmap");
 }
 
+// copy a mapping to the kernel page table.
+// does not flush TLB or enable paging.
+void
+kvm_copymap(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm)
+{
+  if(mappages(pagetable, va, sz, pa, perm) != 0)
+    panic("kvm_copymap");
+}
+
 // translate a kernel virtual address to
 // a physical address. only needed for
 // addresses on the stack.
@@ -156,7 +171,7 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   uint64 a, last;
   pte_t *pte;
 
-  a = PGROUNDDOWN(va);
+  a = PGROUNDDOWN(va);                // a 指向 va 的page地址
   last = PGROUNDDOWN(va + size - 1);
   for(;;){
     if((pte = walk(pagetable, a, 1)) == 0)
@@ -287,7 +302,7 @@ freewalk(pagetable_t pagetable)
       uint64 child = PTE2PA(pte);
       freewalk((pagetable_t)child);
       pagetable[i] = 0;
-    } else if(pte & PTE_V){                                 // 叶节点
+    } else if(pte & PTE_V){                                 // 叶节点，PTE 是实际的PPN | flags
       panic("freewalk: leaf");
     }
   }
@@ -299,9 +314,10 @@ freewalk(pagetable_t pagetable)
 void
 uvmfree(pagetable_t pagetable, uint64 sz)
 {
+  // sz 是用户已使用最高虚拟内存的边界，uvmunmap 取消映射的同时就回收对应的物理页
   if(sz > 0)
     uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 1);
-  freewalk(pagetable);
+  freewalk(pagetable); // 确保叶节点都回收，然后回收页表
 }
 
 // Given a parent process's page table, copy
