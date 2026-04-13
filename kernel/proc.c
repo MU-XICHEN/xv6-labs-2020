@@ -159,7 +159,7 @@ freeproc(struct proc *p)
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   if (p->kernel_pagetable)
-    proc_free_kernel_pagetable(p);
+    proc_free_kernel_pagetable(p->kernel_pagetable, p->sz, p->kstack);
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -180,34 +180,31 @@ pagetable_t proc_kernel_pagetable(struct proc *p) {
     return 0;
 
    // uart registers
-  kvm_copymap(pagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+  uvm_kernel_map(pagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
 
   // virtio mmio disk interface
-  kvm_copymap(pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+  uvm_kernel_map(pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
 
-  // CLINT
-  kvm_copymap(pagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+  // // CLINT
+  // uvm_kernel_map(pagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
 
   // PLIC
-  kvm_copymap(pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+  uvm_kernel_map(pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
 
   // map kernel text executable and read-only.
-  kvm_copymap(pagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+  uvm_kernel_map(pagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R |  PTE_X);
 
   // map kernel data and the physical RAM we'll make use of.
-  kvm_copymap(pagetable, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+  uvm_kernel_map(pagetable, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
 
   // map the trampoline for trap entry/exit to
   // the highest virtual address in the kernel.
-
-  // 给物理地址 trampoline 映射了一个虚拟内存空间
-  // 即，后续内核本身对 trampoline 虚拟地址的访问会通过 MMU 非直接映射的方式映射到物理地址
-  kvm_copymap(pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+  uvm_kernel_map(pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 
   // kstack 更新，更新为以进程自身的 kernel pagetable 为映射关系的 va
   uint64 va = KSTACK((int) (p - proc));
   uint64 pa = kvmpa(va); // 在 procinit 的时候，kstack 已经分配了物理页
-  kvm_copymap(pagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  uvm_kernel_map(pagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
   p->kstack = va;
 
   return pagetable;
@@ -248,21 +245,23 @@ proc_pagetable(struct proc *p)
 
 
 // free kernel page tables
-void proc_free_kernel_pagetable(struct proc *p) {
-  // 主要是 free 页表占用的 page memory，最终指向的内容不释放
-  pagetable_t k_pagetable = p->kernel_pagetable;
+void
+proc_free_kernel_pagetable(pagetable_t k_pagetable, uint64 sz, uint64 kstack_va) {
+  // 主要是 free 页表占用的 page memory，最终指向的内容不释放，uvmfree 中确保所有映射都取消后，统一全部释放
 
   uvmunmap(k_pagetable, UART0, 1, 0);
   uvmunmap(k_pagetable, VIRTIO0, 1, 0);
-  uvmunmap(k_pagetable, CLINT, 0x10000 / PGSIZE, 0);
+  // uvmunmap(k_pagetable, CLINT, 0x10000 / PGSIZE, 0);
   uvmunmap(k_pagetable, PLIC, 0x400000 / PGSIZE, 0);
   uvmunmap(k_pagetable, KERNBASE, PGROUNDUP((uint64)etext-KERNBASE) / PGSIZE, 0);
   uvmunmap(k_pagetable, (uint64)etext, PGROUNDUP(PHYSTOP-(uint64)etext) / PGSIZE, 0);
   uvmunmap(k_pagetable, TRAMPOLINE, 1, 0);
-  uvmunmap(k_pagetable, p->kstack, 1, 0);
+  uvmunmap(k_pagetable, kstack_va, 1, 0);
 
-  // 以上只是将所有叶子节点和物理内存的映射 unmap了，现在三级页表还是存在的
-  freewalk(k_pagetable); // 回收三级页表
+  // uvmunmap 用户虚拟地址在 kernel pagetable 上的映射
+  if(sz > 0)
+    uvmunmap(k_pagetable, 0, PGROUNDUP(sz)/PGSIZE, 0); // 回收 sz 范围内的所有节点，注意物理内存都已经被 proc_freepagetable 回收
+  freewalk(k_pagetable); // 确保叶节点都回收，然后回收页表
 }
 
 // Free a process's page table, and free the
@@ -302,8 +301,9 @@ userinit(void)
   
   // allocate one user page and copy init's instructions
   // and data into it.
-  uvminit(p->pagetable, initcode, sizeof(initcode));
-  p->sz = PGSIZE;
+  uvminit(p, initcode, sizeof(initcode));
+
+  p->sz = PGSIZE; // free 的时候记得从0 的位置 free 掉 sz 大小的page和对应 memory
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -327,11 +327,11 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    if((sz = uvmalloc(p->pagetable, p->kernel_pagetable, sz, sz + n)) == 0) {
       return -1;
     }
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    sz = uvmdealloc(p->pagetable, p->kernel_pagetable, sz, sz + n);
   }
   p->sz = sz;
   return 0;
@@ -347,16 +347,17 @@ fork(void)
   struct proc *p = myproc();
 
   // Allocate process.
-  if((np = allocproc()) == 0){
+  if((np = allocproc()) == 0){ // 此时 np 的 pagetable 还是空的，kernel pt 也因为 pt 是空的，所以没有映射进程代码段
     return -1;
   }
 
   // Copy user memory from parent to child.
-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+  if(uvmcopy(p->pagetable, np, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
   }
+
   np->sz = p->sz;
 
   np->parent = p;

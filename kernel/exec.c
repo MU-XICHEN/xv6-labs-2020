@@ -14,6 +14,7 @@ static int loadseg(pde_t *pgdir, uint64 addr, struct inode *ip, uint offset, uin
 int
 exec(char *path, char **argv)
 {
+  // exec 会替换页表，所以用于页表上所有节点的变动都得同步，意味着对虚拟关系映射的同步
   char *s, *last;
   int i, off;
   uint64 argc, sz = 0, sp, ustack[MAXARG+1], stackbase;
@@ -22,8 +23,13 @@ exec(char *path, char **argv)
   struct proghdr ph;
   pagetable_t pagetable = 0, oldpagetable;
   struct proc *p = myproc();
+  uint64 old_sz = p->sz;
 
   begin_op();
+
+  pagetable_t k_pagetable = p->kernel_pagetable;
+  if(old_sz > 0)
+    uvmunmap(k_pagetable, 0, PGROUNDUP(old_sz)/PGSIZE, 0); // 取消 old_k_usz 范围内的映射，用于后续新建映射
 
   if((ip = namei(path)) == 0){
     end_op();
@@ -37,7 +43,7 @@ exec(char *path, char **argv)
   if(elf.magic != ELF_MAGIC)
     goto bad;
 
-  if((pagetable = proc_pagetable(p)) == 0)
+  if(((pagetable = proc_pagetable(p)) == 0))
     goto bad;
 
   // Load program into memory.
@@ -51,7 +57,7 @@ exec(char *path, char **argv)
     if(ph.vaddr + ph.memsz < ph.vaddr)
       goto bad;
     uint64 sz1;
-    if((sz1 = uvmalloc(pagetable, sz, ph.vaddr + ph.memsz)) == 0)
+    if((sz1 = uvmalloc(pagetable, k_pagetable, sz, ph.vaddr + ph.memsz)) == 0)
       goto bad;
     sz = sz1;
     if(ph.vaddr % PGSIZE != 0)
@@ -64,16 +70,17 @@ exec(char *path, char **argv)
   ip = 0;
 
   p = myproc();
-  uint64 oldsz = p->sz;
 
   // Allocate two pages at the next page boundary.
   // Use the second as the user stack.
   sz = PGROUNDUP(sz);
   uint64 sz1;
-  if((sz1 = uvmalloc(pagetable, sz, sz + 2*PGSIZE)) == 0)
+  if((sz1 = uvmalloc(pagetable, k_pagetable, sz, sz + 2*PGSIZE)) == 0)
     goto bad;
   sz = sz1;
   uvmclear(pagetable, sz-2*PGSIZE);
+  uvmclear(k_pagetable, sz-2*PGSIZE);
+
   sp = sz;
   stackbase = sp - PGSIZE;
 
@@ -116,7 +123,7 @@ exec(char *path, char **argv)
   p->sz = sz;
   p->trapframe->epc = elf.entry;  // initial program counter = main
   p->trapframe->sp = sp; // initial stack pointer
-  proc_freepagetable(oldpagetable, oldsz);
+  proc_freepagetable(oldpagetable, old_sz);
 
   if(p->pid==1)
     vmprint(p->pagetable);
@@ -128,6 +135,17 @@ exec(char *path, char **argv)
   if(ip){
     iunlockput(ip);
     end_op();
+  }
+
+  // 失败后，恢复原有的映射
+  if(old_sz > 0) {
+    uint64 pa;
+    for(i = 0; i < old_sz; i += PGSIZE){
+      if((pa = walkaddr(p->pagetable, i)) == 0)
+        panic("exec: address should exist");
+      if(mappages_ukernel_pt(p->kernel_pagetable, i, PGSIZE, (uint64)pa, PTE_W|PTE_R|PTE_X) != 0)
+        panic("exec: restore map error");
+    }
   }
   return -1;
 }

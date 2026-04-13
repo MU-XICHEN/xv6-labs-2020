@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -137,10 +139,10 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
 // copy a mapping to the kernel page table.
 // does not flush TLB or enable paging.
 void
-kvm_copymap(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm)
+uvm_kernel_map(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm)
 {
   if(mappages(pagetable, va, sz, pa, perm) != 0)
-    panic("kvm_copymap");
+    panic("uvm_kernel_map");
 }
 
 // translate a kernel virtual address to
@@ -161,6 +163,23 @@ kvmpa(uint64 va)
     panic("kvmpa");
   pa = PTE2PA(*pte);
   return pa+off;
+}
+
+
+// map PTES of user address to user's kernel page table
+// note: pages PTES should not has PTE_U permission so that user process access pa by user's kernel pt later
+int
+mappages_ukernel_pt(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm) {
+  uint64 last = PGROUNDDOWN(va + size - 1); // 不能超过，等于没事，不会覆盖
+  
+  if (last > PLIC) {
+    // panic("mappages_ukernel_pt"); // or return -1
+    return -1;
+  }
+
+  int perm_new = (perm & ~((int)PTE_U));
+
+  return mappages(pagetable, va, size, pa, perm_new);
 }
 
 // Create PTEs for virtual addresses starting at va that refer to
@@ -195,6 +214,7 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
 void
 uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 {
+  // 消除了映射，但是三级页表还存在
   uint64 a;
   pte_t *pte;
 
@@ -233,7 +253,7 @@ uvmcreate()
 // for the very first process.
 // sz must be less than a page.
 void
-uvminit(pagetable_t pagetable, uchar *src, uint sz)
+uvminit(struct proc *p, uchar *src, uint sz)
 {
   char *mem;
 
@@ -241,14 +261,15 @@ uvminit(pagetable_t pagetable, uchar *src, uint sz)
     panic("inituvm: more than a page");
   mem = kalloc();
   memset(mem, 0, PGSIZE);
-  mappages(pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U);
+  mappages(p->pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U);
+  mappages_ukernel_pt(p->kernel_pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X);
   memmove(mem, src, sz);
 }
 
 // Allocate PTEs and physical memory to grow process from oldsz to
 // newsz, which need not be page aligned.  Returns new size or 0 on error.
 uint64
-uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+uvmalloc(pagetable_t pagetable, pagetable_t k_pagetable, uint64 oldsz, uint64 newsz)
 {
   char *mem;
   uint64 a;
@@ -260,13 +281,17 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   for(a = oldsz; a < newsz; a += PGSIZE){
     mem = kalloc();
     if(mem == 0){
-      uvmdealloc(pagetable, a, oldsz);
+      uvmdealloc(pagetable, k_pagetable, a, oldsz);
       return 0;
     }
     memset(mem, 0, PGSIZE);
-    if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+
+    int res1 = mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0;
+    int res2 = mappages_ukernel_pt(k_pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R) != 0;
+    
+    if(res1 || res2){
       kfree(mem);
-      uvmdealloc(pagetable, a, oldsz);
+      uvmdealloc(pagetable, k_pagetable, a, oldsz);
       return 0;
     }
   }
@@ -278,7 +303,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 // need to be less than oldsz.  oldsz can be larger than the actual
 // process size.  Returns the new process size.
 uint64
-uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+uvmdealloc(pagetable_t pagetable, pagetable_t k_pagetable, uint64 oldsz, uint64 newsz)
 {
   if(newsz >= oldsz)
     return oldsz;
@@ -286,6 +311,7 @@ uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
     int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
     uvmunmap(pagetable, PGROUNDUP(newsz), npages, 1);
+    uvmunmap(k_pagetable, PGROUNDUP(newsz), npages, 1);
   }
 
   return newsz;
@@ -329,7 +355,7 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
 int
-uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
+uvmcopy(pagetable_t old, struct proc* new_process, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
@@ -345,8 +371,13 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
       goto err;
-    memmove(mem, (char*)pa, PGSIZE);      // 将一个物理页的内容拷贝到另一个物理页
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+    memmove(mem, (char*)pa, PGSIZE); // 复制原来进程的 memory 到 mem
+
+    // 目前 new_process 中的 pgt 是空的，没有映射 memory，现在根据 i 到 mem 进行映射
+    int map_res_up = mappages(new_process->pagetable, i, PGSIZE, (uint64)mem, flags) != 0;
+    int map_res_ukp = mappages_ukernel_pt(new_process->kernel_pagetable, i, PGSIZE, (uint64)mem, flags) != 0;
+
+    if(map_res_up || map_res_ukp){ // 任意一个页表创建失败，当前进程创建失败
       kfree(mem);
       goto err;
     }
@@ -354,7 +385,8 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   return 0;
 
  err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
+  uvmunmap(new_process->pagetable, 0, i / PGSIZE, 1); // 1 表示回收实际内存
+  uvmunmap(new_process->kernel_pagetable, 0, i / PGSIZE, 1);
   return -1;
 }
 
@@ -402,6 +434,12 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
+
+  return copyin_new(pagetable, dst, srcva, len);
+
+  // copyin 是负责将用户空间的内容拷贝到内核空间，所以只有 src 是va
+  // dst 是物理地址，kernel 本身后续使用
+  // kernel 的 va 和 pa 是直接映射的
   uint64 n, va0, pa0;
 
   while(len > 0){
@@ -409,7 +447,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
-    n = PGSIZE - (srcva - va0);
+    n = PGSIZE - (srcva - va0); // n 表示这一页中还可以被 copy 的字节数量
     if(n > len)
       n = len;
     memmove(dst, (void *)(pa0 + (srcva - va0)), n);
@@ -428,6 +466,9 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
+
+  return copyinstr_new(pagetable, dst, srcva, max);
+
   uint64 n, va0, pa0;
   int got_null = 0;
 
