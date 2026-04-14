@@ -176,8 +176,10 @@ uint64          uvmdealloc(pagetable_t, pagetable_t, uint64, uint64);
 int             uvmcopy(pagetable_t old, struct proc* new_process, uint64 sz);
 #endif
 void            uvmfree(pagetable_t, uint64);
+void            uvmfree_onlyPTEs(pagetable_t pagetable, uint64 sz);
 void            freewalk(pagetable_t pagetable);
 void            uvmunmap(pagetable_t, uint64, uint64, int);
+void            uvmunmap_fail(pagetable_t, uint64, uint64);
 void            uvmclear(pagetable_t, uint64);
 uint64          walkaddr(pagetable_t, uint64);
 int             copyout(pagetable_t, uint64, char *, uint64);

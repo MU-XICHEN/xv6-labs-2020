@@ -140,7 +140,11 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
 int 
 uvm_kernel_map(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm)
 {
-  return mappages(pagetable, va, sz, pa, perm);
+  int res = mappages(pagetable, va, sz, pa, perm);
+  if (res != 0) {
+    uvmunmap_fail(pagetable, va, PGROUNDUP(sz) / PGSIZE);
+  }
+  return res;
 }
 
 // translate a kernel virtual address to
@@ -171,7 +175,6 @@ mappages_ukernel_pt(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, in
   uint64 last = PGROUNDDOWN(va + size - 1); // 不能超过，等于没事，不会覆盖
   
   if (last > PLIC) {
-    // panic("mappages_ukernel_pt"); // or return -1
     return -1;
   }
 
@@ -193,7 +196,7 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   a = PGROUNDDOWN(va);                // a 指向 va 的page地址
   last = PGROUNDDOWN(va + size - 1);
   for(;;){
-    if((pte = walk(pagetable, a, 1)) == 0)
+    if((pte = walk(pagetable, a, 1)) == 0) // pte 不能存在且无法分配的情况下，mappages 会失败
       return -1;
     if(*pte & PTE_V)
       panic("remap");
@@ -231,6 +234,29 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       kfree((void*)pa);
     }
     *pte = 0; // 相当于只将第三级的 PTE 置空，从而消除了映射
+  }
+}
+
+// 用于 mappages 映射失败时
+// only used in uvm_kernel_map,
+void
+uvmunmap_fail(pagetable_t pagetable, uint64 va, uint64 npages)
+{
+  // 消除了映射，但是三级页表还存在
+  uint64 a;
+  pte_t *pte;
+
+  if((va % PGSIZE) != 0)
+    panic("uvmunmap: not aligned");
+
+  for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
+    if((pte = walk(pagetable, a, 0))) { // pte 存在
+      if (*pte & PTE_V) { // pte 有效
+        if (PTE_FLAGS(*pte) != PTE_V) { // 不只有 PTE_V，是个叶节点
+          *pte = 0; // 删除映射
+        }
+      }
+    }
   }
 }
 
@@ -328,7 +354,7 @@ freewalk(pagetable_t pagetable)
       uint64 child = PTE2PA(pte);
       freewalk((pagetable_t)child);
       pagetable[i] = 0;
-    } else if(pte & PTE_V){                                 // 叶节点，PTE 是实际的PPN | flags
+    } else if(pte & PTE_V){                                 // 叶节点，此时叶节点应该不再映射物理内存
       panic("freewalk: leaf");
     }
   }
@@ -344,6 +370,17 @@ uvmfree(pagetable_t pagetable, uint64 sz)
   if(sz > 0)
     uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 1); // 将 虚拟内存 0 到 sz 范围之内的映射都消除，并回收物理内存
   freewalk(pagetable); // 确保叶节点都回收，然后回收页表
+}
+
+// only free page-table pages
+// sz used to uvmunmap [0-sz] user va
+void
+uvmfree_onlyPTEs(pagetable_t pagetable, uint64 sz)
+{
+  // sz 是用户已使用最高虚拟内存的边界，uvmunmap 取消映射的同时就回收对应的物理页
+  if(sz > 0)
+    uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 0); // 将 虚拟内存 0 到 sz 范围之内的映射都消除，并回收物理内存
+  freewalk(pagetable); 
 }
 
 // Given a parent process's page table, copy

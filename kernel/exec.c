@@ -9,7 +9,6 @@
 
 static int loadseg(pde_t *pgdir, uint64 addr, struct inode *ip, uint offset, uint sz);
 
-
 void break_p() {
   printf("");
 }
@@ -143,7 +142,7 @@ exec(char *path, char **argv)
 
  bad:
   if(k_pagetable)
-      proc_free_kernel_pagetable(k_pagetable, sz, p->kstack);
+    proc_free_kernel_pagetable(k_pagetable, sz, p->kstack);
   if(pagetable)
     proc_freepagetable(pagetable, sz);
   if(ip){

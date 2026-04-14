@@ -22,6 +22,73 @@
 char buf[BUFSZ];
 char name[3];
 
+//
+// use sbrk() to count how many free physical memory pages there are.
+// touches the pages to force allocation.
+// because out of memory with lazy allocation results in the process
+// taking a fault and being killed, fork and report back.
+//
+int
+countfree()
+{
+  int fds[2];
+
+  if(pipe(fds) < 0){
+    printf("pipe() failed in countfree()\n");
+    exit(1);
+  }
+  
+  int pid = fork();
+
+  if(pid < 0){
+    printf("fork failed in countfree()\n");
+    exit(1);
+  }
+
+  if(pid == 0){
+    close(fds[0]);
+    
+    while(1){
+      uint64 a = (uint64) sbrk(4096);
+      if(a == 0xffffffffffffffff){
+        break;
+      }
+
+      // modify the memory to make sure it's really allocated.
+      *(char *)(a + 4096 - 1) = 1;
+
+      // report back one more page.
+      if(write(fds[1], "x", 1) != 1){
+        printf("write() failed in countfree()\n");
+        exit(1);
+      }
+    }
+
+    exit(0);
+  }
+
+  close(fds[1]);
+
+  int n = 0;
+  while(1){
+    char c;
+    int cc = read(fds[0], &c, 1);
+    if(cc < 0){
+      printf("read() failed in countfree()\n");
+      exit(1);
+    }
+    if(cc == 0)
+      break;
+    n += 1;
+  }
+
+  close(fds[0]);
+  wait((int*)0);
+  
+  return n;
+}
+
+
 // what if you pass ridiculous pointers to system calls
 // that read user memory with copyin?
 void
@@ -2496,6 +2563,7 @@ void
 execout(char *s)
 {
   for(int avail = 0; avail < 15; avail++){
+    // printf("[test] start No.%d free: %d\n", avail, countfree());
     int pid = fork();
     if(pid < 0){
       printf("fork failed\n");
@@ -2524,72 +2592,6 @@ execout(char *s)
   }
 
   exit(0);
-}
-
-//
-// use sbrk() to count how many free physical memory pages there are.
-// touches the pages to force allocation.
-// because out of memory with lazy allocation results in the process
-// taking a fault and being killed, fork and report back.
-//
-int
-countfree()
-{
-  int fds[2];
-
-  if(pipe(fds) < 0){
-    printf("pipe() failed in countfree()\n");
-    exit(1);
-  }
-  
-  int pid = fork();
-
-  if(pid < 0){
-    printf("fork failed in countfree()\n");
-    exit(1);
-  }
-
-  if(pid == 0){
-    close(fds[0]);
-    
-    while(1){
-      uint64 a = (uint64) sbrk(4096);
-      if(a == 0xffffffffffffffff){
-        break;
-      }
-
-      // modify the memory to make sure it's really allocated.
-      *(char *)(a + 4096 - 1) = 1;
-
-      // report back one more page.
-      if(write(fds[1], "x", 1) != 1){
-        printf("write() failed in countfree()\n");
-        exit(1);
-      }
-    }
-
-    exit(0);
-  }
-
-  close(fds[1]);
-
-  int n = 0;
-  while(1){
-    char c;
-    int cc = read(fds[0], &c, 1);
-    if(cc < 0){
-      printf("read() failed in countfree()\n");
-      exit(1);
-    }
-    if(cc == 0)
-      break;
-    n += 1;
-  }
-
-  close(fds[0]);
-  wait((int*)0);
-  
-  return n;
 }
 
 // run each test in its own process. run returns 1 if child's exit()

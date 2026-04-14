@@ -171,8 +171,30 @@ freeproc(struct proc *p)
   p->state = UNUSED;
 }
 
+struct va_info {
+  uint64 va;
+  uint64 pg_sz;
+};
+
+void free_pg_arr(pagetable_t pagetable, struct va_info *arr, int len) {
+  int i = 0;
+  while (i < len)
+  {
+    uvmunmap(pagetable, arr[i].va, PGROUNDUP(arr[i].pg_sz) / PGSIZE, 0);
+    i++;
+  }
+  uvmfree_onlyPTEs(pagetable, 0);
+}
+
+void set_va_info(struct va_info *info, uint64 va, uint64 sz) {
+  info->va = va;
+  info->pg_sz = sz;
+}
+
 pagetable_t proc_kernel_pagetable(struct proc *p) {
   pagetable_t pagetable;
+  struct va_info va_valid_arr[8] = {0};
+  int i = 0;
 
   // An empty page table.
   pagetable = uvmcreate();
@@ -180,39 +202,67 @@ pagetable_t proc_kernel_pagetable(struct proc *p) {
     return 0;
 
    // uart registers
-  if (uvm_kernel_map(pagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W) != 0)
+   if (uvm_kernel_map(pagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W) != 0) {
+    free_pg_arr(pagetable, va_valid_arr, i);
     return 0;
+   } else {
+    set_va_info(&(va_valid_arr[i++]), UART0, PGSIZE);
+   }
 
   // virtio mmio disk interface
-  if (uvm_kernel_map(pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W) != 0)
+  if (uvm_kernel_map(pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W) != 0) {
+    free_pg_arr(pagetable, va_valid_arr, i);
     return 0;
+   } else {
+    set_va_info(&(va_valid_arr[i++]), VIRTIO0, PGSIZE);
+   }
     
   // // CLINT
   // uvm_kernel_map(pagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
 
   // PLIC
-  if(uvm_kernel_map(pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W) != 0)
+  if (uvm_kernel_map(pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W) != 0) {
+    free_pg_arr(pagetable, va_valid_arr, i);
     return 0;
+   } else {
+    set_va_info(&(va_valid_arr[i++]), PLIC, 0x400000);
+   }
 
   // map kernel text executable and read-only.
-  if (uvm_kernel_map(pagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R |  PTE_X) != 0)
+  if (uvm_kernel_map(pagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R |  PTE_X) != 0) {
+    free_pg_arr(pagetable, va_valid_arr, i);
     return 0;
+   } else {
+    set_va_info(&(va_valid_arr[i++]), KERNBASE, (uint64)etext-KERNBASE);
+   }
 
   // map kernel data and the physical RAM we'll make use of.
-  if(uvm_kernel_map(pagetable, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W) != 0)
+  if (uvm_kernel_map(pagetable, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W) != 0) {
+    free_pg_arr(pagetable, va_valid_arr, i);
     return 0;
+   } else {
+    set_va_info(&(va_valid_arr[i++]), (uint64)etext, PHYSTOP-(uint64)etext);
+   }
 
   // map the trampoline for trap entry/exit to
   // the highest virtual address in the kernel.
-  if(uvm_kernel_map(pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X) != 0)
+  if (uvm_kernel_map(pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X) != 0) {
+    free_pg_arr(pagetable, va_valid_arr, i);
     return 0;
+   } else {
+    set_va_info(&(va_valid_arr[i++]), TRAMPOLINE, PGSIZE);
+   }
 
   // kstack 更新，更新为以进程自身的 kernel pagetable 为映射关系的 va
-  uint64 va = KSTACK((int) (p - proc));
-  uint64 pa = kvmpa(va); // 在 procinit 的时候，kstack 已经分配了物理页
+  uint64 stack_va = KSTACK((int) (p - proc));
+  uint64 pa = kvmpa(stack_va); // 在 procinit 的时候，kstack 已经分配了物理页
 
-  if(uvm_kernel_map(pagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W) != 0)
+  if (uvm_kernel_map(pagetable, stack_va, (uint64)pa, PGSIZE, PTE_R | PTE_W) != 0) {
+    free_pg_arr(pagetable, va_valid_arr, i);
     return 0;
+  } else {
+    set_va_info(&(va_valid_arr[i++]), stack_va, PGSIZE);
+  }
 
   return pagetable;
 }
@@ -255,7 +305,6 @@ proc_pagetable(struct proc *p)
 void
 proc_free_kernel_pagetable(pagetable_t k_pagetable, uint64 sz, uint64 kstack_va) {
   // 主要是 free 页表占用的 page memory，最终指向的内容不释放，uvmfree 中确保所有映射都取消后，统一全部释放
-
   uvmunmap(k_pagetable, UART0, 1, 0);
   uvmunmap(k_pagetable, VIRTIO0, 1, 0);
   // uvmunmap(k_pagetable, CLINT, 0x10000 / PGSIZE, 0);
@@ -265,10 +314,7 @@ proc_free_kernel_pagetable(pagetable_t k_pagetable, uint64 sz, uint64 kstack_va)
   uvmunmap(k_pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(k_pagetable, kstack_va, 1, 0);
 
-  // uvmunmap 用户虚拟地址在 kernel pagetable 上的映射
-  if(sz > 0)
-    uvmunmap(k_pagetable, 0, PGROUNDUP(sz)/PGSIZE, 0); // 回收 sz 范围内的所有节点，注意物理内存都已经被 proc_freepagetable 回收
-  freewalk(k_pagetable); // 确保叶节点都回收，然后回收页表
+  uvmfree_onlyPTEs(k_pagetable, sz); // 回收 PTEs
 }
 
 // Free a process's page table, and free the
