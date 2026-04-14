@@ -180,32 +180,39 @@ pagetable_t proc_kernel_pagetable(struct proc *p) {
     return 0;
 
    // uart registers
-  uvm_kernel_map(pagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+  if (uvm_kernel_map(pagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W) != 0)
+    return 0;
 
   // virtio mmio disk interface
-  uvm_kernel_map(pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
-
+  if (uvm_kernel_map(pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W) != 0)
+    return 0;
+    
   // // CLINT
   // uvm_kernel_map(pagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
 
   // PLIC
-  uvm_kernel_map(pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+  if(uvm_kernel_map(pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W) != 0)
+    return 0;
 
   // map kernel text executable and read-only.
-  uvm_kernel_map(pagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R |  PTE_X);
+  if (uvm_kernel_map(pagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R |  PTE_X) != 0)
+    return 0;
 
   // map kernel data and the physical RAM we'll make use of.
-  uvm_kernel_map(pagetable, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+  if(uvm_kernel_map(pagetable, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W) != 0)
+    return 0;
 
   // map the trampoline for trap entry/exit to
   // the highest virtual address in the kernel.
-  uvm_kernel_map(pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+  if(uvm_kernel_map(pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X) != 0)
+    return 0;
 
   // kstack 更新，更新为以进程自身的 kernel pagetable 为映射关系的 va
   uint64 va = KSTACK((int) (p - proc));
   uint64 pa = kvmpa(va); // 在 procinit 的时候，kstack 已经分配了物理页
-  uvm_kernel_map(pagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-  p->kstack = va;
+
+  if(uvm_kernel_map(pagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W) != 0)
+    return 0;
 
   return pagetable;
 }

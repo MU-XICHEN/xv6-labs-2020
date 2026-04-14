@@ -10,6 +10,10 @@
 static int loadseg(pde_t *pgdir, uint64 addr, struct inode *ip, uint offset, uint sz);
 
 
+void break_p() {
+  printf("");
+}
+
 // 原来的进程对象被 kernel 复用，但是分配了新的物理内存，因此期间也重新修改了页表映射
 int
 exec(char *path, char **argv)
@@ -22,14 +26,10 @@ exec(char *path, char **argv)
   struct inode *ip;
   struct proghdr ph;
   pagetable_t pagetable = 0, oldpagetable;
+  pagetable_t k_pagetable = 0, old_k_pagetable;
   struct proc *p = myproc();
-  uint64 old_sz = p->sz;
 
   begin_op();
-
-  pagetable_t k_pagetable = p->kernel_pagetable;
-  if(old_sz > 0)
-    uvmunmap(k_pagetable, 0, PGROUNDUP(old_sz)/PGSIZE, 0); // 取消 old_k_usz 范围内的映射，用于后续新建映射
 
   if((ip = namei(path)) == 0){
     end_op();
@@ -46,30 +46,35 @@ exec(char *path, char **argv)
   if(((pagetable = proc_pagetable(p)) == 0))
     goto bad;
 
+  if ((k_pagetable = proc_kernel_pagetable(p)) == 0) {
+    goto bad;
+  }
+
   // Load program into memory.
   for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
     if(readi(ip, 0, (uint64)&ph, off, sizeof(ph)) != sizeof(ph))
-      goto bad;
+        goto bad;
     if(ph.type != ELF_PROG_LOAD)
       continue;
     if(ph.memsz < ph.filesz)
-      goto bad;
+        goto bad;
     if(ph.vaddr + ph.memsz < ph.vaddr)
-      goto bad;
+        goto bad;
     uint64 sz1;
     if((sz1 = uvmalloc(pagetable, k_pagetable, sz, ph.vaddr + ph.memsz)) == 0)
-      goto bad;
+        goto bad;
     sz = sz1;
     if(ph.vaddr % PGSIZE != 0)
-      goto bad;
+        goto bad;
     if(loadseg(pagetable, ph.vaddr, ip, ph.off, ph.filesz) < 0)
-      goto bad;
+        goto bad;
   }
   iunlockput(ip);
   end_op();
   ip = 0;
 
   p = myproc();
+  uint64 old_sz = p->sz;
 
   // Allocate two pages at the next page boundary.
   // Use the second as the user stack.
@@ -87,13 +92,13 @@ exec(char *path, char **argv)
   // Push argument strings, prepare rest of stack in ustack.
   for(argc = 0; argv[argc]; argc++) {
     if(argc >= MAXARG)
-      goto bad;
+        goto bad;
     sp -= strlen(argv[argc]) + 1;
     sp -= sp % 16; // riscv sp must be 16-byte aligned
     if(sp < stackbase)
-      goto bad;
+        goto bad;
     if(copyout(pagetable, sp, argv[argc], strlen(argv[argc]) + 1) < 0)
-      goto bad;
+        goto bad;
     ustack[argc] = sp;
   }
   ustack[argc] = 0;
@@ -124,28 +129,26 @@ exec(char *path, char **argv)
   p->trapframe->epc = elf.entry;  // initial program counter = main
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, old_sz);
+  // 使用新的 pgtb
+  w_satp(MAKE_SATP(k_pagetable)); 
+  sfence_vma();
+
+  old_k_pagetable = p->kernel_pagetable;
+  p->kernel_pagetable = k_pagetable;
+  proc_free_kernel_pagetable(old_k_pagetable, old_sz, p->kstack);
 
   if(p->pid==1)
     vmprint(p->pagetable);
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:
+  if(k_pagetable)
+      proc_free_kernel_pagetable(k_pagetable, sz, p->kstack);
   if(pagetable)
     proc_freepagetable(pagetable, sz);
   if(ip){
     iunlockput(ip);
     end_op();
-  }
-
-  // 失败后，恢复原有的映射
-  if(old_sz > 0) {
-    uint64 pa;
-    for(i = 0; i < old_sz; i += PGSIZE){
-      if((pa = walkaddr(p->pagetable, i)) == 0)
-        panic("exec: address should exist");
-      if(mappages_ukernel_pt(p->kernel_pagetable, i, PGSIZE, (uint64)pa, PTE_W|PTE_R|PTE_X) != 0)
-        panic("exec: restore map error");
-    }
   }
   return -1;
 }

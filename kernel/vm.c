@@ -137,12 +137,10 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
 }
 
 // copy a mapping to the kernel page table.
-// does not flush TLB or enable paging.
-void
+int 
 uvm_kernel_map(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm)
 {
-  if(mappages(pagetable, va, sz, pa, perm) != 0)
-    panic("uvm_kernel_map");
+  return mappages(pagetable, va, sz, pa, perm);
 }
 
 // translate a kernel virtual address to
