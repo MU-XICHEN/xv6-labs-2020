@@ -310,8 +310,8 @@ uvmdealloc(pagetable_t pagetable, pagetable_t k_pagetable, uint64 oldsz, uint64 
 
   if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
     int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
-    uvmunmap(pagetable, PGROUNDUP(newsz), npages, 1);
     uvmunmap(k_pagetable, PGROUNDUP(newsz), npages, 0);
+    uvmunmap(pagetable, PGROUNDUP(newsz), npages, 1);
   }
 
   return newsz;
