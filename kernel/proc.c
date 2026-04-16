@@ -628,6 +628,7 @@ scheduler(void)
          */
 
         // 切换为下一个进程的内核页表，然后再去恢复其上下文，继续以内核态运行
+        // 这里是内核调度导致的切换内核页表，swtch 之后直接进入对应进程的内核态
         w_satp(MAKE_SATP(p->kernel_pagetable)); 
         sfence_vma();
 
