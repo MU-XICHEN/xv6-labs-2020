@@ -122,6 +122,8 @@ panic(char *s)
   printf(s);
   printf("\n");
   panicked = 1; // freeze uart output from other CPUs
+
+  backtrace();
   for(;;)
     ;
 }
@@ -131,4 +133,23 @@ printfinit(void)
 {
   initlock(&pr.lock, "pr");
   pr.locking = 1;
+}
+
+void
+backtrace()
+{
+  printf("backtrace\n");
+  uint64 current_fp = r_fp();
+  // stack 往地址小的方向增长，意味着 main 是页顶开始
+  uint64 stack_end = PGROUNDUP(current_fp);
+  while (current_fp < stack_end)
+  {
+    uint64 ra = *(uint64*)(current_fp - 8);
+    // 打印的是 return address
+    // 这个return address映射上一个函数的位置
+    printf("%p\n", ra);
+    current_fp = *(uint64 *)(current_fp - 16);
+
+    if (current_fp == 0) break;
+  }
 }

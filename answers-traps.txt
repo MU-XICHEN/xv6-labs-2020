@@ -1,0 +1,1 @@
+(1) index of args < 8: a0-a7 or fa0 - fa7; above: stack
