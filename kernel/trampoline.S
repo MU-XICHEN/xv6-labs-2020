@@ -22,6 +22,7 @@ uservec:
         #
         # sscratch points to where the process's p->trapframe is
         # mapped into user space, at TRAPFRAME.
+        # TRAPFRAME 在所有进程中映射在相同的虚拟地址，但是不同的进程有不同的物理内存，所以以来用户进程的页表
         #
         
 	# swap a0 and sscratch
@@ -29,6 +30,7 @@ uservec:
         csrrw a0, sscratch, a0
 
         # save the user registers in TRAPFRAME
+        # 当前还在使用 user pagetable，并因为 TRAPFRAME 在其中有映射，所以可以访问到对应的物理地址
         sd ra, 40(a0)
         sd sp, 48(a0)
         sd gp, 56(a0)
@@ -64,6 +66,8 @@ uservec:
         csrr t0, sscratch
         sd t0, 112(a0)
 
+        # 以上步骤完成将所有寄存器内容存入当前进程的TRAPFRAME: p->trapframe，存入了内存指定位置
+
         # restore kernel stack pointer from p->trapframe->kernel_sp
         ld sp, 8(a0)
 
@@ -74,6 +78,7 @@ uservec:
         ld t0, 16(a0)
 
         # restore kernel page table from p->trapframe->kernel_satp
+        # 切换到次内核页表，在上离开之前被存在 kernel_satp 中，表示当前进程进入内核之后应用的页表
         ld t1, 0(a0)
         csrw satp, t1
         sfence.vma zero, zero
@@ -93,11 +98,13 @@ userret:
         # a1: user page table, for satp.
 
         # switch to the user page table.
+        # 同理，trampoline 在内核空间和用户空间中都映射在相同的虚拟地址和物理地址，所以切换以后依然可以正常执行后续指令
         csrw satp, a1
         sfence.vma zero, zero
 
         # put the saved user a0 in sscratch, so we
         # can swap it with our a0 (TRAPFRAME) in the last step.
+        # 先用 sscratch 存下用户空间的 a0，因为现在 a0 被用于 TRAPFRAME，所以不能覆盖
         ld t0, 112(a0)
         csrw sscratch, t0
 

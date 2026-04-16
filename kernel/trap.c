@@ -43,6 +43,7 @@ usertrap(void)
 
   // send interrupts and exceptions to kerneltrap(),
   // since we're now in the kernel.
+  // 进入这里之后，就要切换到内核的trap handlers 了
   w_stvec((uint64)kernelvec);
 
   struct proc *p = myproc();
@@ -52,7 +53,6 @@ usertrap(void)
   
   if(r_scause() == 8){
     // system call
-
     if(p->killed)
       exit(-1);
 
@@ -66,15 +66,17 @@ usertrap(void)
 
     syscall();
   } else if((which_dev = devintr()) != 0){
+    // interrupt
     // ok
   } else {
+    // exception in user space
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
   }
 
   if(p->killed)
-    exit(-1);
+    exit(-1); // 内部会处理，回收当前的进程
 
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2)
@@ -141,9 +143,10 @@ kerneltrap()
   if((sstatus & SSTATUS_SPP) == 0)
     panic("kerneltrap: not from supervisor mode");
   if(intr_get() != 0)
-    panic("kerneltrap: interrupts enabled");
+    panic("kerneltrap: interrupts enabled"); // 需要保证进入 kernelvec 之后，不再接收中断处理
 
   if((which_dev = devintr()) == 0){
+    // exeception in kernel space
     printf("scause %p\n", scause);
     printf("sepc=%p stval=%p\n", r_sepc(), r_stval());
     panic("kerneltrap");

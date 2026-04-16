@@ -106,6 +106,7 @@ int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
 
 // swtch.S
+// 直接从当前进程切换，没有主动切换页表，意味着如果进程使用不同的kernel pt，需要 scheduler 支持页表切换
 void            swtch(struct context*, struct context*);
 
 // spinlock.c
