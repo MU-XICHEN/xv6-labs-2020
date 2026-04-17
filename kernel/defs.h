@@ -105,6 +105,8 @@ void            yield(void);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
+void            store_alarm_info(struct proc*);
+void            restore_trapframe_from_alarm_info(struct proc *);
 
 // swtch.S
 // 直接从当前进程切换，没有主动切换页表，意味着如果进程使用不同的kernel pt，需要 scheduler 支持页表切换

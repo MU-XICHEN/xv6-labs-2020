@@ -79,8 +79,32 @@ usertrap(void)
     exit(-1); // 内部会处理，回收当前的进程
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
-    yield();
+  if(which_dev == 2) {
+    int to_yield = 1;
+    if (p->alarm_info->handler != NULL_HANLDER && p->alarm_info->ticks){    // 存在 handler
+      if ((p->alarm_info->processing) == 0) {                               // 用户进程当前没有处理，优先于 tick_count 判断，处理结束再重新计数
+        if(++(p->alarm_info->tick_count) >= p->alarm_info->ticks) {         // 不在处理，且满足的情况，保存相关状态，设置 epc 指向 handler
+            // store registers first
+            store_alarm_info(p);
+          
+          
+            p->trapframe->epc = p->alarm_info->handler;
+            p->alarm_info->processing = 1;
+
+            // 现在的问题：
+            // 返回 user space 执行 handler
+            // 由于 handler 是被我们直接修改 epc 的方式跳转的，跳转执行到 ret 的时候
+            // 此时用户栈上存在的return address 是当时被 timer 打断的函数的 return address
+            // 所以 periodic ret 的时候，会直接使用该 return address
+            // 当前路径是调用 write 过程中触发了 timer interrupt中断，从而调用了 handler
+
+            to_yield = 0;
+        }
+      }                                
+    }
+    if (to_yield)
+      yield();
+  }
 
   usertrapret();
 }
@@ -153,8 +177,11 @@ kerneltrap()
   }
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2 && myproc() != 0 && myproc()->state == RUNNING)
+  if(which_dev == 2 && myproc() != 0 && myproc()->state == RUNNING) {
+    // 这里是用户进程进入了内核态，同时又触发了 timer interrupt，此时还是需要将 CPU 释放给内核
     yield();
+    // 直到内核再调度到该进程，之后就继续执行后续内容
+  }
 
   // the yield() may have caused some traps to occur,
   // so restore trap registers for use by kernelvec.S's sepc instruction.

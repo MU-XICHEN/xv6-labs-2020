@@ -97,3 +97,46 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_sigalarm(void) 
+{
+  int ticks = 0;
+  uint64 handler = NULL_HANLDER;
+  if (argint(0, &ticks) < 0 || argaddr(1, (uint64 *)(&handler)))
+    return -1;
+
+  struct proc* p = myproc();
+
+  p->alarm_info->ticks = ticks;
+  p->alarm_info->handler = handler;
+
+  if (!ticks) {
+    if (!handler) {
+
+      p->alarm_info->handler = NULL_HANLDER;
+      p->alarm_info->ticks = 0;
+      p->alarm_info->tick_count = 0;
+      p->alarm_info->processing = 0;
+
+    } else {
+      // ticks 为0，但是 handler 不为0
+      panic("sys_sigalarm");
+    }
+  }
+  
+  return 0;
+}
+
+uint64
+sys_sigreturn(void) 
+{
+  struct proc* p = myproc();
+
+  restore_trapframe_from_alarm_info(p);
+
+  p->alarm_info->processing = 0;
+  p->alarm_info->tick_count = 0;
+
+  return 0;
+}

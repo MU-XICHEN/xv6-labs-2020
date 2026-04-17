@@ -113,6 +113,12 @@ found:
     return 0;
   }
 
+  if ((p->alarm_info = (struct alarm_info *)kalloc()) == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
@@ -127,6 +133,12 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  // initialize proc's alarm_info
+  p->alarm_info->handler = NULL_HANLDER;
+  p->alarm_info->tick_count = 0;
+  p->alarm_info->ticks = 0; 
+  p->alarm_info->processing = 0;
+
   return p;
 }
 
@@ -139,8 +151,14 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+
+  if (p->alarm_info)
+    kfree((void *)p->alarm_info);
+  p->alarm_info = 0;
+
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -696,4 +714,79 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+
+void            
+store_alarm_info(struct proc* p)
+{
+  p->alarm_info->epc = p->trapframe->epc;
+  p->alarm_info->ra  = p->trapframe->ra;
+  p->alarm_info->sp  = p->trapframe->sp;
+  p->alarm_info->gp  = p->trapframe->gp;
+  p->alarm_info->tp  = p->trapframe->tp;
+  p->alarm_info->t0  = p->trapframe->t0;
+  p->alarm_info->t1  = p->trapframe->t1;
+  p->alarm_info->t2  = p->trapframe->t2;
+  p->alarm_info->s0  = p->trapframe->s0;
+  p->alarm_info->s1  = p->trapframe->s1;
+  p->alarm_info->a0  = p->trapframe->a0;
+  p->alarm_info->a1  = p->trapframe->a1;
+  p->alarm_info->a2  = p->trapframe->a2;
+  p->alarm_info->a3  = p->trapframe->a3;
+  p->alarm_info->a4  = p->trapframe->a4;
+  p->alarm_info->a5  = p->trapframe->a5;
+  p->alarm_info->a6  = p->trapframe->a6;
+  p->alarm_info->a7  = p->trapframe->a7;
+  p->alarm_info->s2  = p->trapframe->s2;
+  p->alarm_info->s3  = p->trapframe->s3;
+  p->alarm_info->s4  = p->trapframe->s4;
+  p->alarm_info->s5  = p->trapframe->s5;
+  p->alarm_info->s6  = p->trapframe->s6;
+  p->alarm_info->s7  = p->trapframe->s7;
+  p->alarm_info->s8  = p->trapframe->s8;
+  p->alarm_info->s9  = p->trapframe->s9;
+  p->alarm_info->s10 = p->trapframe->s10;
+  p->alarm_info->s11 = p->trapframe->s11;
+  p->alarm_info->t3  = p->trapframe->t3;
+  p->alarm_info->t4  = p->trapframe->t4;
+  p->alarm_info->t5  = p->trapframe->t5;
+  p->alarm_info->t6  = p->trapframe->t6;
+}
+
+void            
+restore_trapframe_from_alarm_info(struct proc *p) 
+{
+  p->trapframe->epc = p->alarm_info->epc;
+  p->trapframe->ra  = p->alarm_info->ra;
+  p->trapframe->sp  = p->alarm_info->sp;
+  p->trapframe->gp  = p->alarm_info->gp;
+  p->trapframe->tp  = p->alarm_info->tp;
+  p->trapframe->t0  = p->alarm_info->t0;
+  p->trapframe->t1  = p->alarm_info->t1;
+  p->trapframe->t2  = p->alarm_info->t2;
+  p->trapframe->s0  = p->alarm_info->s0;
+  p->trapframe->s1  = p->alarm_info->s1;
+  p->trapframe->a0  = p->alarm_info->a0;
+  p->trapframe->a1  = p->alarm_info->a1;
+  p->trapframe->a2  = p->alarm_info->a2;
+  p->trapframe->a3  = p->alarm_info->a3;
+  p->trapframe->a4  = p->alarm_info->a4;
+  p->trapframe->a5  = p->alarm_info->a5;
+  p->trapframe->a6  = p->alarm_info->a6;
+  p->trapframe->a7  = p->alarm_info->a7;
+  p->trapframe->s2  = p->alarm_info->s2;
+  p->trapframe->s3  = p->alarm_info->s3;
+  p->trapframe->s4  = p->alarm_info->s4;
+  p->trapframe->s5  = p->alarm_info->s5;
+  p->trapframe->s6  = p->alarm_info->s6;
+  p->trapframe->s7  = p->alarm_info->s7;
+  p->trapframe->s8  = p->alarm_info->s8;
+  p->trapframe->s9  = p->alarm_info->s9;
+  p->trapframe->s10 = p->alarm_info->s10;
+  p->trapframe->s11 = p->alarm_info->s11;
+  p->trapframe->t3  = p->alarm_info->t3;
+  p->trapframe->t4  = p->alarm_info->t4;
+  p->trapframe->t5  = p->alarm_info->t5;
+  p->trapframe->t6  = p->alarm_info->t6;
 }
