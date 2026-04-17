@@ -114,6 +114,9 @@ sys_sigalarm(void)
   if (!ticks) {
     if (!handler) {
 
+      // sigalarm(0, 0)  -> 执行这个之后表示不再处理 timer interrupt
+      // 注意：其他寄存器内容不能销毁，sigalarm 之后可能会调用 sys_sigreturn
+
       p->alarm_info->handler = NULL_HANLDER;
       p->alarm_info->ticks = 0;
       p->alarm_info->tick_count = 0;
