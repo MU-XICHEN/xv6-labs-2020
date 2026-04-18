@@ -29,6 +29,38 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
+// -1 invalid access
+// 0 valid access
+int handle_page_fault(struct proc *p) {
+  char *mem;
+
+  uint64 stval = r_stval();
+
+  if (check_uva_range_valid(stval, p) == -1) {
+    // 不触发缺页，而是访问非法地址，kill 进程
+    p->killed = 1;
+    return -1;
+  }
+
+  uint64 failed_va = PGROUNDDOWN(stval);
+
+  if ((mem = kalloc()) == 0) {
+    // if kalloc() fails in the page fault handler, kill the current process.
+    // printf("[handle_page_fault] kalloc failed");
+    return -1;
+  }
+
+  memset(mem, 0, PGSIZE);
+
+  if(mappages(p->pagetable, failed_va, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+    // printf("[handle_page_fault] mappages failed");
+    kfree(mem);
+    return -1;
+  }
+
+  return 0;
+}
+
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
@@ -67,10 +99,20 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+    // device interrupt
   } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    p->killed = 1;
+    // handle page fault
+    int invalid_access = 1;
+    if (r_scause() == 13 || r_scause() == 15) {
+      invalid_access = handle_page_fault(p);
+    } 
+
+    if (invalid_access != 0) {
+      // kill current process for other exception
+      printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      p->killed = 1;
+    }
   }
 
   if(p->killed)

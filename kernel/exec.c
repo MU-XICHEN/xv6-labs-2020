@@ -142,7 +142,8 @@ loadseg(pagetable_t pagetable, uint64 va, struct inode *ip, uint offset, uint sz
     panic("loadseg: va must be page aligned");
 
   for(i = 0; i < sz; i += PGSIZE){
-    pa = walkaddr(pagetable, va + i);
+    uint64 va0 = va + i;
+    pa = walkaddr(pagetable, va0);
     if(pa == 0)
       panic("loadseg: address should exist");
     if(sz - i < PGSIZE)

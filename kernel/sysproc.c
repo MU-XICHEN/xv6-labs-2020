@@ -41,15 +41,23 @@ sys_wait(void)
 uint64
 sys_sbrk(void)
 {
-  int addr;
+  // do not kalloc to alloc pages, just change p->sz
   int n;
+  if(argint(0, &n) == -1)
+    return -1;
 
-  if(argint(0, &n) < 0)
-    return -1;
-  addr = myproc()->sz;
-  if(growproc(n) < 0)
-    return -1;
-  return addr;
+  struct proc *p = myproc();
+  uint64 addr = p->sz;
+
+  if(n > 0){
+    // positive 的时候不再申请，只修改 sz
+    p->sz += n;
+  } else if(n < 0){
+    // negative 的情况下，将其中的内容释放掉，然后修改 sz
+    p->sz = uvmdealloc(p->pagetable, addr, addr + n);
+  }
+
+  return addr; // 都是返回旧值
 }
 
 uint64

@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -180,17 +182,18 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     panic("uvmunmap: not aligned");
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
-    if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
-    if(PTE_FLAGS(*pte) == PTE_V)
-      panic("uvmunmap: not a leaf");
-    if(do_free){
-      uint64 pa = PTE2PA(*pte);
-      kfree((void*)pa);
-    }
-    *pte = 0;
+
+    if((pte = walk(pagetable, a, 0)) != 0) // pte 存在
+      if((*pte & PTE_V) != 0)              // pte 有效，叶节点或者非叶节点
+        if(PTE_FLAGS(*pte) != PTE_V) {     // 叶节点
+
+          if(do_free){
+            uint64 pa = PTE2PA(*pte);
+            kfree((void*)pa);
+          }
+
+          *pte = 0; // 置零叶节点，取消映射
+        }
   }
 }
 
@@ -314,18 +317,24 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
-    pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+    // 现在 sz 和 pt 已有的映射并不同步，意味着 sz 中可能包含还没有映射的内容
+    // improvement: COW
+    // 暂时：拷贝当前 old process 已有的 pt 和 mem，使得 fork 的进程在fork之后可以顺利执行
+    if((pte = walk(old, i, 0)) != 0) { // pte 存在
+      if((*pte & PTE_V) != 0) {        // pte 有效
+        // 拷贝已有内容
+        pa = PTE2PA(*pte);
+        flags = PTE_FLAGS(*pte);
+
+        if((mem = kalloc()) == 0)
+          goto err;
+        
+        memmove(mem, (char*)pa, PGSIZE);
+        if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+          kfree(mem);
+          goto err;
+        }
+      }
     }
   }
   return 0;
@@ -348,6 +357,62 @@ uvmclear(pagetable_t pagetable, uint64 va)
   *pte &= ~PTE_U;
 }
 
+// 1: invalid
+// 0: valid
+// only check va from sbrk, not focusing on va of text, data
+int 
+check_uva_range_valid(uint64 va, struct proc *p)
+{
+  // (1) Kill a process if it page-faults on a virtual memory address higher than any allocated with sbrk().
+  //     大于等于 p->sz 的va 不应该存在映射
+  // (2) Handle faults on the invalid page below the user stack.
+  //     sbrk 的内容用于增长堆，因此低于 stackbase 栈底的也不应该存在映射
+  if ((va >= p->sz) || (va < PGROUNDUP(p->trapframe->sp))) {
+    return -1; // invalid
+  }
+  return 0; // valid
+}
+
+// 0:   failed
+// pa:  succ
+// only used for user pagetable
+uint64 alloc_page_ifneed(pagetable_t pagetable, uint64 va) {
+  char* pa;
+
+  struct proc *p = myproc();
+
+  if ((pa = (char *)walkaddr(pagetable, va)) != 0) {
+    // exist, do not do anything
+    return (uint64)pa;
+  } else {
+    // not exist
+    if (check_uva_range_valid(va, p) == -1){
+      // 无效 va
+      return 0;
+    }
+
+    uint64 va0 = PGROUNDDOWN(va);
+
+    if ((pa = kalloc()) == 0) {
+      // if kalloc() fails in the page fault handler, kill the current process.
+      printf("[alloc_page_ifneed] kalloc failed");
+      p->killed = 1;
+      return 0;
+    }
+
+    memset(pa, 0, PGSIZE);
+    
+    if(mappages(p->pagetable, va0, PGSIZE, (uint64)pa, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+      printf("[alloc_page_ifneed] mappages failed");
+      kfree(pa);
+      p->killed = 1;
+      return 0;
+    }
+
+    return (uint64)pa;
+  }
+}
+
 // Copy from kernel to user.
 // Copy len bytes from src to virtual address dstva in a given page table.
 // Return 0 on success, -1 on error.
@@ -358,7 +423,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
+    pa0 = alloc_page_ifneed(pagetable, va0);
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (dstva - va0);
@@ -383,7 +448,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
+    pa0 = alloc_page_ifneed(pagetable, va0);
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (srcva - va0);
@@ -410,7 +475,7 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 
   while(got_null == 0 && max > 0){
     va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
+    pa0 = alloc_page_ifneed(pagetable, va0);
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (srcva - va0);
