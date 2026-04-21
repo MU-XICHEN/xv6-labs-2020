@@ -118,4 +118,5 @@ timervec:
         ld a1, 0(a0)
         csrrw a0, mscratch, a0
 
+        # 返回内核态的时候，检查 sip 发现存在未处理的中断，则跳转到 kernelvec
         mret

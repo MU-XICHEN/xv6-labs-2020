@@ -167,7 +167,7 @@ uartgetc(void)
 {
   if(ReadReg(LSR) & 0x01){
     // input data is ready.
-    return ReadReg(RHR);
+    return ReadReg(RHR); //  an internal FIFO of waiting characters
   } else {
     return -1;
   }
