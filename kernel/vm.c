@@ -6,14 +6,78 @@
 #include "defs.h"
 #include "fs.h"
 
+#define char_size (1 << 8) - 1 
+
+int
+inner_mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm, int is_kvmmap);
+
 /*
  * the kernel's page table.
  */
 pagetable_t kernel_pagetable;
 
+char km_refs_arr[MAX_KM_SPACE / PGSIZE] = {0}; // 32768 个索引，只用于记录 [KERNBASE, PHYSTOP) 之间的物理页的引用
+
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
+
+extern char end[]; // first address after kernel.
+                   // defined by kernel.ld.
+
+int pa_to_km_ref_index(uint64 pa)
+{
+  if (pa < (uint64)end || pa >= PHYSTOP) {
+    return -1; // 只对 [end, PHYSTOP) 中的 mem 更新 refs
+  }
+  if ((PGROUNDDOWN(pa) - KERNBASE) < 0) 
+    panic("pa_to_km_ref_index");
+
+  return (PGROUNDDOWN(pa) - KERNBASE) / PGSIZE;
+}
+
+void print_km_refs() 
+{
+  return;
+  
+  uint64 mem_start;
+  printf("------------------ print_km_refs ------------------ \n");
+  for (mem_start = (uint64)end; mem_start < PHYSTOP; mem_start+=PGSIZE)
+  {
+    int ref_index = pa_to_km_ref_index(mem_start);
+    int ref_count = km_refs_arr[ref_index];
+    if (ref_count != 0)  {
+      printf("- pa: %p index: %d count: %d\n", mem_start, ref_index, ref_count);
+    }
+  }
+}
+
+void increment_km_ref(uint64 pa)  {
+  int index = pa_to_km_ref_index(pa);
+  if (index < 0)
+    return;
+
+  if (pa == 0x87f6b000) {
+    printf("");
+  }
+    
+  ++(km_refs_arr[index]);
+}
+
+void decrease_km_ref(uint64 pa) {
+  int index = pa_to_km_ref_index(pa);
+  if (index < 0)
+    return;
+
+  if (pa == 0x87f6b000) {
+    printf("");
+  }
+
+  int refs = --km_refs_arr[index];
+  if (refs < 0) {
+    panic("decrease_km_ref");
+  }
+}
 
 /*
  * create a direct-map page table for the kernel.
@@ -117,7 +181,8 @@ walkaddr(pagetable_t pagetable, uint64 va)
 void
 kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
 {
-  if(mappages(kernel_pagetable, va, sz, pa, perm) != 0)
+  // used to map necessary device to kernel_pagetable, without updateing refs
+  if(inner_mappages(kernel_pagetable, va, sz, pa, perm, 1) != 0)
     panic("kvmmap");
 }
 
@@ -141,12 +206,17 @@ kvmpa(uint64 va)
   return pa+off;
 }
 
+int
+mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm){
+  return inner_mappages(pagetable, va, size, pa, perm, 0);
+}
+
 // Create PTEs for virtual addresses starting at va that refer to
 // physical addresses starting at pa. va and size might not
 // be page-aligned. Returns 0 on success, -1 if walk() couldn't
 // allocate a needed page-table page.
 int
-mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
+inner_mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm, int is_kvmmap)
 {
   uint64 a, last;
   pte_t *pte;
@@ -159,6 +229,9 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
     if(*pte & PTE_V)
       panic("remap");
     *pte = PA2PTE(pa) | perm | PTE_V;
+    if (!is_kvmmap) { // kvmmap 的映射不需要进行更新 ref，kvmmap map 的内容，整个生命周期都存在
+      increment_km_ref(pa);   // pa 映射到最后的 PTE
+    }
     if(a == last)
       break;
     a += PGSIZE;
@@ -186,11 +259,14 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       panic("uvmunmap: not mapped");
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
+    
+    uint64 pa = PTE2PA(*pte);
+    decrease_km_ref(pa); // 映射减少的时候，减少 ref
+
+    *pte = 0;
     if(do_free){
-      uint64 pa = PTE2PA(*pte);
       kfree((void*)pa);
     }
-    *pte = 0;
   }
 }
 
@@ -270,6 +346,7 @@ uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 }
 
 // Recursively free page-table pages.
+// By recursively setting all PTES of the lowest level pagetable to zero
 // All leaf mappings must already have been removed.
 void
 freewalk(pagetable_t pagetable)
@@ -295,14 +372,14 @@ void
 uvmfree(pagetable_t pagetable, uint64 sz)
 {
   if(sz > 0)
-    uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 1);
-  freewalk(pagetable);
+    uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 1); // free physical memory
+  freewalk(pagetable); // recycle user's pagetable
 }
 
 // Given a parent process's page table, copy
 // its memory into a child's page table.
-// Copies both the page table and the
-// physical memory.
+// Only copy the pagetables, and both parent and child map to same pa
+// while setting PTES to read-only
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
 int
@@ -311,27 +388,44 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
+    // pte pointer to the leaf pte, including not only PTE_V
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+
     pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    flags = (PTE_FLAGS(*pte) & ~(PTE_W)) | PTE_C; // remove write flag and add cow flag
+
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){ // map child to parent's pa without write access
       goto err;
     }
+
+    *pte = PA2PTE(pa) | flags; // change parent pte to read-only
   }
+
   return 0;
 
  err:
   uvmunmap(new, 0, i / PGSIZE, 1);
+
+  pte_t *err_pte;
+  // restore parent's ptes
+  for (int j = 0; j < i; j++)
+  {
+    if((err_pte = walk(old, j, 0)) == 0)
+      panic("uvmcopy err: pte should exist");
+    if((*err_pte & PTE_V) == 0)
+      panic("uvmcopy err: page not present");
+    
+    flags = (PTE_FLAGS(*err_pte) | (PTE_W)); // restore write access
+
+    pa = PTE2PA(*err_pte);
+    *err_pte = PA2PTE(pa) | flags; // restore parent's flags
+  }
+  
   return -1;
 }
 
@@ -439,4 +533,44 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+void print_omit_symbol(int level) {
+  int test_level = level + 1;
+  for (int i = 0; i < test_level; i++)
+  {
+    printf("..");
+    if (i != test_level - 1)
+    {
+      printf(" ");
+    }
+  }
+}
+
+void print_pte(pte_t pte, int level, int index) {
+  uint64 pa = PTE2PA(pte);
+  print_omit_symbol(level);
+  printf("%d: pte %p pa ref %p\n", index, pte, pa, km_refs_arr[pa_to_km_ref_index(pa)]);
+}
+
+void vmprint_inner(pagetable_t pagetable, int level){
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){ // 非叶节点
+      // this PTE points to a lower-level page table.
+      print_pte(pte, level, i);
+      uint64 child = PTE2PA(pte);
+      vmprint_inner((pagetable_t)child, level + 1);
+    } else if(pte & PTE_V){                                // 叶节点
+      print_pte(pte, level, i);
+    } else {                                               // 未使用节点
+      continue;
+    }
+  }
+}
+
+void vmprint(pagetable_t pagetable) {
+  printf("page table %p\n", pagetable);
+  vmprint_inner(pagetable, 0);
 }

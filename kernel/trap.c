@@ -66,11 +66,49 @@ usertrap(void)
 
     syscall();
   } else if((which_dev = devintr()) != 0){
+    // device interrupts
     // ok
   } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    p->killed = 1;
+    uint64 failed_va = PGROUNDDOWN(r_stval());
+    pte_t *target_pte;
+    uint old_flags;
+    uint64 old_pa;
+
+    // handle cow exception
+    if ((target_pte = walk(p->pagetable, failed_va, 0)) != 0) {
+      old_flags = PTE_FLAGS(*target_pte);
+      old_pa = PTE2PA(*target_pte);
+      if (old_flags & (PTE_V | PTE_C)) {
+        // handle cow - 有效，且这是一个 cow pte
+        uint64 new_pa;
+        // kalloc new page
+        if ((new_pa = (uint64)kalloc()) != 0) {
+          // unmap old read-only page and map new writable page to p->pagetable
+          uvmunmap(p->pagetable, failed_va, 1, 0); // unmap va and old pa from pagetable
+          
+          memmove((char *)new_pa, (char*)old_pa, PGSIZE);
+          
+          uint new_flags = PTE_W|PTE_X|PTE_R|PTE_U;
+          if (mappages(p->pagetable, failed_va, PGSIZE, new_pa, new_flags) != 0) {
+            // failed
+            kfree((void *)new_pa); // 如果还没有映射成功的话，new_pa 对应的 ref 也不会更新
+            p->killed = 1;
+          } else {
+            // succ
+            // printf("usertrap() [cow succ]: unexpected scause %p pid=%d\n", r_scause(), p->pid);
+            // printf("                  sepc=%p stval=%p new_pa=%p\n", r_sepc(), r_stval(), new_pa);
+          }
+        } else {
+          // no extra memory for p
+          p->killed = 1;  
+        }
+      }
+    } else {
+      printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+
+      p->killed = 1;
+    }
   }
 
   if(p->killed)

@@ -14,6 +14,8 @@ void freerange(void *pa_start, void *pa_end);
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
+extern char km_refs_arr[]; // defined in vm.c
+
 struct run {
   struct run *next;
 };
@@ -51,6 +53,15 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
+  int ref_index = pa_to_km_ref_index((uint64)pa);
+  if (ref_index == -1)
+    panic("kfree: ref_index"); // set illegal pa to free which does't belong to free list
+
+  if ((km_refs_arr[ref_index] != 0)) {
+    // printf("ref_index: %d ref: %d\n", ref_index, km_refs_arr[ref_index]);
+    return; // there are still other processes to have this memory
+  }
+  
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 

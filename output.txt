@@ -1,0 +1,25 @@
+qemu-system-riscv64 -machine virt -bios none -kernel kernel/kernel -m 128M -smp 1 -nographic -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 -S -gdb tcp::25000
+
+xv6 kernel is booting
+
+------------------ print_km_refs ------------------ 
+- pa: 0x0000000087f67000 index: 32615 count: 1
+- pa: 0x0000000087f68000 index: 32616 count: 1
+- pa: 0x0000000087f6b000 index: 32619 count: 1
+- pa: 0x0000000087f76000 index: 32630 count: 1
+init: starting sh
+------------------ print_km_refs ------------------ 
+- pa: 0x0000000087f5e000 index: 32606 count: 1
+- pa: 0x0000000087f5f000 index: 32607 count: 1
+- pa: 0x0000000087f60000 index: 32608 count: 1
+- pa: 0x0000000087f63000 index: 32611 count: 1
+- pa: 0x0000000087f67000 index: 32615 count: 1
+- pa: 0x0000000087f68000 index: 32616 count: 1
+- pa: 0x0000000087f6b000 index: 32619 count: 1
+- pa: 0x0000000087f6f000 index: 32623 count: 1
+- pa: 0x0000000087f76000 index: 32630 count: 1
+$ fdsfdas
+exec fdsfdas failed
+panic: init exiting
+QEMU: Terminated
+
