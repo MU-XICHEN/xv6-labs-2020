@@ -83,10 +83,11 @@ usertrap(void)
         uint64 new_pa;
         // kalloc new page
         if ((new_pa = (uint64)kalloc()) != 0) {
-          // unmap old read-only page and map new writable page to p->pagetable
-          uvmunmap(p->pagetable, failed_va, 1, 0); // unmap va and old pa from pagetable
-          
+
           memmove((char *)new_pa, (char*)old_pa, PGSIZE);
+
+          // unmap old read-only page and map new writable page to p->pagetable
+          uvmunmap(p->pagetable, failed_va, 1, 1); // unmap va and old pa from pagetable
           
           uint new_flags = PTE_W|PTE_X|PTE_R|PTE_U;
           if (mappages(p->pagetable, failed_va, PGSIZE, new_pa, new_flags) != 0) {
@@ -111,8 +112,9 @@ usertrap(void)
     }
   }
 
-  if(p->killed)
+  if(p->killed) {
     exit(-1);
+  }
 
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2)
