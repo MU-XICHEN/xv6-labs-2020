@@ -1,25 +1,66 @@
-qemu-system-riscv64 -machine virt -bios none -kernel kernel/kernel -m 128M -smp 1 -nographic -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 -S -gdb tcp::25000
+kalloc pa: 0x0000000087f72000
+kalloc pa: 0x0000000087f75000
+kalloc pa: 0x0000000087f74000
+kalloc pa: 0x0000000087f73000
+kalloc pa: 0x0000000087f71000
+kalloc pa: 0x0000000087f70000
+kalloc pa: 0x0000000087f5d000
+kalloc pa: 0x0000000087f5c000
+kalloc pa: 0x0000000087f5b000
+kalloc pa: 0x0000000087f5a000
+kalloc pa: 0x0000000087f59000
+kalloc pa: 0x0000000087f58000
+kalloc pa: 0x0000000087f57000
+kalloc pa: 0x0000000087f56000
+kalloc pa: 0x0000000087f55000
+kalloc pa: 0x0000000087f54000
+kalloc pa: 0x0000000087f53000
+kalloc pa: 0x0000000087f52000
+kalloc pa: 0x0000000087f51000
+kalloc pa: 0x0000000087f50000
+kalloc pa: 0x0000000087f4f000
+kalloc pa: 0x0000000087f4e000
+kalloc pa: 0x0000000087f4d000
+kalloc pa: 0x0000000087f4c000
+kalloc pa: 0x0000000087f4b000
+kalloc pa: 0x0000000087f4a000
+kalloc pa: 0x0000000087f49000
+kalloc pa: 0x0000000087f48000
+kalloc pa: 0x0000000087f47000
+kalloc pa: 0x0000000087f46000
+kalloc pa: 0x0000000087f45000
+kalloc pa: 0x0000000087f44000
+kalloc pa: 0x0000000087f43000
 
-xv6 kernel is booting
-
------------------- print_km_refs ------------------ 
-- pa: 0x0000000087f67000 index: 32615 count: 1
-- pa: 0x0000000087f68000 index: 32616 count: 1
-- pa: 0x0000000087f6b000 index: 32619 count: 1
-- pa: 0x0000000087f76000 index: 32630 count: 1
-init: starting sh
------------------- print_km_refs ------------------ 
-- pa: 0x0000000087f5e000 index: 32606 count: 1
-- pa: 0x0000000087f5f000 index: 32607 count: 1
-- pa: 0x0000000087f60000 index: 32608 count: 1
-- pa: 0x0000000087f63000 index: 32611 count: 1
-- pa: 0x0000000087f67000 index: 32615 count: 1
-- pa: 0x0000000087f68000 index: 32616 count: 1
-- pa: 0x0000000087f6b000 index: 32619 count: 1
-- pa: 0x0000000087f6f000 index: 32623 count: 1
-- pa: 0x0000000087f76000 index: 32630 count: 1
-$ fdsfdas
-exec fdsfdas failed
-panic: init exiting
-QEMU: Terminated
-
+kfree pa: 0x0000000087f5c000
+kfree pa: 0x0000000087f5d000
+kfree pa: 0x0000000087f5b000
+kfree pa: 0x0000000087f5a000
+kfree pa: 0x0000000087f59000
+kfree pa: 0x0000000087f58000
+kfree pa: 0x0000000087f57000
+kfree pa: 0x0000000087f56000
+kfree pa: 0x0000000087f55000
+kfree pa: 0x0000000087f54000
+kfree pa: 0x0000000087f53000
+kfree pa: 0x0000000087f52000
+kfree pa: 0x0000000087f51000
+kfree pa: 0x0000000087f50000
+kfree pa: 0x0000000087f4f000
+kfree pa: 0x0000000087f4e000
+kfree pa: 0x0000000087f4d000
+kfree pa: 0x0000000087f4c000
+kfree pa: 0x0000000087f70000
+kfree pa: 0x0000000087f71000
+kfree pa: 0x0000000087f73000
+kfree pa: 0x0000000087f74000
+kfree pa: 0x0000000087f75000
+kfree pa: 0x0000000087f4b000
+kfree pa: 0x0000000087f47000
+kfree pa: 0x0000000087f44000
+kfree pa: 0x0000000087f43000
+kfree pa: 0x0000000087f45000
+kfree pa: 0x0000000087f46000
+kfree pa: 0x0000000087f48000
+kfree pa: 0x0000000087f49000
+kfree pa: 0x0000000087f4a000

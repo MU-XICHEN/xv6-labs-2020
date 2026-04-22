@@ -136,11 +136,18 @@ found:
 static void
 freeproc(struct proc *p)
 {
+  if(p->pagetable)
+    proc_freepagetable(p->pagetable, p->sz);
+
+  // 修改为 cow 之后，p->trapframe 的释放应该在 proc_freepagetable 之后
+  // 因为现在 kfree 只有在 page 的ref 为 0的时候，才进行释放
+  // 进程创建成功后，会 map p->trapframe  使得 ref++
+  // 那么在 freeproc 的时候，就应该先通过 proc_freepagetable 来减少 ref
+  // 之后再 通过 kfree 来 free p->trapframe
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
-  if(p->pagetable)
-    proc_freepagetable(p->pagetable, p->sz);
+
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
