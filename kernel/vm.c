@@ -442,6 +442,31 @@ uvmclear(pagetable_t pagetable, uint64 va)
   *pte &= ~PTE_U;
 }
 
+int 
+handle_cow(pagetable_t pagetable, uint64 target_va, uint64 old_pa)
+{
+  uint64 new_pa;
+  // kalloc new page
+  if ((new_pa = (uint64)kalloc()) == 0) 
+    return -1;
+
+    // kalloc succ
+  memmove((char *)new_pa, (char*)old_pa, PGSIZE);
+
+  // unmap old read-only page and map new writable page to p->pagetable
+  uvmunmap(pagetable, target_va, 1, 1); // unmap va and old pa from pagetable, and free mem ifneed
+  
+  uint new_flags = PTE_W|PTE_X|PTE_R|PTE_U;
+  
+  if (mappages(pagetable, target_va, PGSIZE, new_pa, new_flags) != 0) {
+    // failed
+    kfree((void *)new_pa); // 如果还没有映射成功的话，new_pa 对应的 ref 也不会更新
+    return -1;
+  } 
+
+  return 0;
+}
+
 // Copy from kernel to user.
 // Copy len bytes from src to virtual address dstva in a given page table.
 // Return 0 on success, -1 on error.

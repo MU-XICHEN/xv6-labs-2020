@@ -163,6 +163,7 @@ int             mappages(pagetable_t, uint64, uint64, uint64, int);
 int             pa_to_km_ref_index(uint64 pa);
 void            increment_km_ref(uint64 pa);
 void            decrease_km_ref(uint64 pa);
+int             handle_cow(pagetable_t pagetable, uint64 target_va, uint64 old_pa);
 void            print_km_refs();
 pagetable_t     uvmcreate(void);
 void            uvminit(pagetable_t, uchar *, uint);
