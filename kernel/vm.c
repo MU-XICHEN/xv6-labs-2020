@@ -442,13 +442,13 @@ uvmclear(pagetable_t pagetable, uint64 va)
   *pte &= ~PTE_U;
 }
 
-int 
+uint64 
 handle_cow(pagetable_t pagetable, uint64 target_va, uint64 old_pa)
 {
   uint64 new_pa;
   // kalloc new page
   if ((new_pa = (uint64)kalloc()) == 0) 
-    return -1;
+    return 0;
 
     // kalloc succ
   memmove((char *)new_pa, (char*)old_pa, PGSIZE);
@@ -461,10 +461,10 @@ handle_cow(pagetable_t pagetable, uint64 target_va, uint64 old_pa)
   if (mappages(pagetable, target_va, PGSIZE, new_pa, new_flags) != 0) {
     // failed
     kfree((void *)new_pa); // 如果还没有映射成功的话，new_pa 对应的 ref 也不会更新
-    return -1;
+    return 0;
   } 
 
-  return 0;
+  return new_pa;
 }
 
 // Copy from kernel to user.

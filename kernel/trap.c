@@ -80,7 +80,7 @@ usertrap(void)
       old_pa = PTE2PA(*target_pte);
 
       if (old_flags & (PTE_V | PTE_C)) {
-        p->killed = (handle_cow(p->pagetable, failed_va, old_pa) != 0); // 0 succ; -1 failed
+        p->killed = (handle_cow(p->pagetable, failed_va, old_pa) == 0); // 0 fail
       }
       
     } else {
