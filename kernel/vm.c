@@ -479,7 +479,23 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
-      return -1;
+      return -1; // 希望写入的 pa 不存在；注意，此时前面的 va0 的数页已经写入了
+
+    // walkaddr 确保 pte 存在，且该 pa 地址，用户有权限访问
+    // 现在，check if need to cow
+    pte_t *pte = walk(pagetable, va0, 0); // 现在可以确保是存在的，且有 PTE_V、PTE_U flags
+    uint old_flags = PTE_FLAGS(*pte);
+
+    if ((old_flags & PTE_C) != 0) {
+      // handle cow
+      if ((pa0 = handle_cow(pagetable, va0, pa0)) == 0) {
+        printf("copyout: handle_cow error");
+        exit(-1);
+      }
+      
+    } else if((old_flags & PTE_W) == 0)
+      panic("copyout");
+
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
