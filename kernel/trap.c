@@ -29,6 +29,13 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
+void
+handle_failed_trap(struct proc *p) {
+  printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+  printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+  p->killed = 1;
+}
+
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
@@ -69,25 +76,32 @@ usertrap(void)
     // device interrupts
     // ok
   } else {
+    // exception
+
     uint64 failed_va = PGROUNDDOWN(r_stval());
     pte_t *target_pte;
     uint old_flags;
     uint64 old_pa;
 
-    // handle cow exception
-    if ((target_pte = walk(p->pagetable, failed_va, 0)) != 0) {
-      old_flags = PTE_FLAGS(*target_pte);
-      old_pa = PTE2PA(*target_pte);
+    uint64 scause = r_scause();
 
-      if (old_flags & (PTE_V | PTE_C)) {
+    // scause 15 means page can not be stored
+    if ((scause == 15)  && ((old_pa = walkaddr(p->pagetable, failed_va)) != 0)) {
+      // handle cow exception
+      // cow 只有 pa 存在的时候才处理，只是无法访问
+      target_pte = walk(p->pagetable, failed_va, 0); // PTE_V & PTE_U 确保存在且有效，且是用户进程可访问的mem
+
+      old_flags = PTE_FLAGS(*target_pte);
+
+      if (old_flags & PTE_C) {
+        // pa 存在且是 cow page，则 cow
         p->killed = (handle_cow(p->pagetable, failed_va, old_pa) == 0); // 0 fail
+      } else {
+        // 其他情况，暂视为错误访问
+        handle_failed_trap(p);
       }
-      
-    } else {
-      printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-      p->killed = 1;
-    }
+    } else
+      handle_failed_trap(p);
   }
 
   if(p->killed) {
