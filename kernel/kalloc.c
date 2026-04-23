@@ -1,7 +1,6 @@
 // Physical memory allocator, for user processes,
 // kernel stacks, page-table pages,
 // and pipe buffers. Allocates whole 4096-byte pages.
-
 #include "types.h"
 #include "param.h"
 #include "memlayout.h"
@@ -16,11 +15,12 @@ void freerange(void *pa_start, void *pa_end);
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
+struct spinlock km_refs_lock;
+
 struct {
   // 存在两种并发场景
   // 同一 CPU 下，interrupt 带来的临界区访问
   // 不同 CPU 下，对共享对象的访问
-  struct spinlock lock;
   char arr[MAX_KM_SPACE / PGSIZE]; // 32768 个索引，只用于记录 [KERNBASE, PHYSTOP) 之间的物理页的引用
 } km_refs;
 
@@ -37,7 +37,7 @@ void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
-  initlock(&km_refs.lock, "krefs");
+  initlock(&km_refs_lock, "krefs");
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -66,16 +66,11 @@ kfree(void *pa)
   if (ref_index == -1)
     panic("kfree: ref_index"); // set illegal pa to free which does't belong to free list
 
-  
-  acquire(&km_refs.lock);
 
   if ((km_refs.arr[ref_index] != 0)) {
-    release(&km_refs.lock);
     return; // there are still other processes to have this memory
   }
-  release(&km_refs.lock);
 
-  
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
@@ -97,9 +92,11 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if(r) {
     kmem.freelist = r->next;
+  }
   release(&kmem.lock);
+
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
@@ -108,7 +105,7 @@ kalloc(void)
 
 uint64
 kamountOfFreeB(void) {
-
+  printf("--------------------------- kamountOfFreeB: ---------------------------\n");
   uint64 total_size = 0;
   struct run *r;
 
@@ -116,6 +113,7 @@ kamountOfFreeB(void) {
   r = kmem.freelist;
   while (r)
   {
+    // printf("kamountOfFreeB: %p\n", r);
     total_size+=PGSIZE;
     r = r->next;
   }
@@ -143,14 +141,14 @@ void print_km_refs()
   {
     int ref_index = pa_to_km_ref_index(mem_start);
 
-    acquire(&km_refs.lock);
+    acquire(&km_refs_lock);
 
     int ref_count = km_refs.arr[ref_index];
     if (ref_count != 0)  {
       printf("- pa: %p index: %d count: %d\n", mem_start, ref_index, ref_count);
     }
 
-    release(&km_refs.lock);
+    release(&km_refs_lock);
   }
 }
 
@@ -159,14 +157,11 @@ void increment_km_ref(uint64 pa)  {
   if (index < 0)
     return;
 
-  acquire(&km_refs.lock);
-
   int ref_count = (int)(km_refs.arr[index]) + 1;
   if (ref_count > char_size)
     panic("increment_km_ref");
   km_refs.arr[index] = ref_count;
 
-  release(&km_refs.lock);
 }
 
 void decrease_km_ref(uint64 pa) {
@@ -174,12 +169,9 @@ void decrease_km_ref(uint64 pa) {
   if (index < 0)
     return;
 
-  acquire(&km_refs.lock);
-  
   int ref_count = (int)(km_refs.arr[index]) - 1;
   if (ref_count < 0)
     panic("decrease_km_ref");
   km_refs.arr[index] = ref_count;
 
-  release(&km_refs.lock);
 }

@@ -13,6 +13,8 @@ inner_mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int per
  */
 pagetable_t kernel_pagetable;
 
+extern struct spinlock km_refs_lock;
+
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
@@ -172,7 +174,11 @@ inner_mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int per
       panic("remap");
     *pte = PA2PTE(pa) | perm | PTE_V;
     if (!is_kvmmap) { // kvmmap 的映射不需要进行更新 ref，kvmmap map 的内容，整个生命周期都存在
+      acquire(&km_refs_lock);
+
       increment_km_ref(pa);   // pa 映射到最后的 PTE
+      
+      release(&km_refs_lock);
     }
     if(a == last)
       break;
@@ -203,12 +209,14 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       panic("uvmunmap: not a leaf");
     
     uint64 pa = PTE2PA(*pte);
-    decrease_km_ref(pa); // 映射减少的时候，减少 ref
 
+    acquire(&km_refs_lock);
     *pte = 0;
+    decrease_km_ref(pa); // 映射减少的时候，减少 ref
     if(do_free){
       kfree((void*)pa);
     }
+    release(&km_refs_lock);
   }
 }
 
