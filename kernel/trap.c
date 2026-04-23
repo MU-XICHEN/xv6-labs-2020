@@ -71,6 +71,7 @@ usertrap(void)
     // so don't enable until done with those registers.
     intr_on();
 
+    // only enable interrupt while syscall()ing
     syscall();
   } else if((which_dev = devintr()) != 0){
     // device interrupts

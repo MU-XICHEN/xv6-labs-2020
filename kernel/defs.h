@@ -64,6 +64,10 @@ void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
 uint64          kamountOfFreeB(void);
+void            print_km_refs();
+int             pa_to_km_ref_index(uint64 pa);
+void            increment_km_ref(uint64 pa);
+void            decrease_km_ref(uint64 pa);
 
 // log.c
 void            initlog(int, struct superblock*);
@@ -160,11 +164,8 @@ void            kvminithart(void);
 uint64          kvmpa(uint64);
 void            kvmmap(uint64, uint64, uint64, int);
 int             mappages(pagetable_t, uint64, uint64, uint64, int);
-int             pa_to_km_ref_index(uint64 pa);
-void            increment_km_ref(uint64 pa);
-void            decrease_km_ref(uint64 pa);
 uint64          handle_cow(pagetable_t pagetable, uint64 target_va, uint64 old_pa);
-void            print_km_refs();
+
 pagetable_t     uvmcreate(void);
 void            uvminit(pagetable_t, uchar *, uint);
 uint64          uvmalloc(pagetable_t, uint64, uint64);

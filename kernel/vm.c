@@ -6,17 +6,12 @@
 #include "defs.h"
 #include "fs.h"
 
-#define char_size (1 << 8) - 1 
-
 int
 inner_mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm, int is_kvmmap);
-
 /*
  * the kernel's page table.
  */
 pagetable_t kernel_pagetable;
-
-char km_refs_arr[MAX_KM_SPACE / PGSIZE] = {0}; // 32768 个索引，只用于记录 [KERNBASE, PHYSTOP) 之间的物理页的引用
 
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
@@ -25,59 +20,6 @@ extern char trampoline[]; // trampoline.S
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
-int pa_to_km_ref_index(uint64 pa)
-{
-  if (pa < (uint64)end || pa >= PHYSTOP) {
-    return -1; // 只对 [end, PHYSTOP) 中的 mem 更新 refs
-  }
-  if ((PGROUNDDOWN(pa) - KERNBASE) < 0) 
-    panic("pa_to_km_ref_index");
-
-  return (PGROUNDDOWN(pa) - KERNBASE) / PGSIZE;
-}
-
-void print_km_refs() 
-{
-  return;
-  
-  uint64 mem_start;
-  printf("------------------ print_km_refs ------------------ \n");
-  for (mem_start = (uint64)end; mem_start < PHYSTOP; mem_start+=PGSIZE)
-  {
-    int ref_index = pa_to_km_ref_index(mem_start);
-    int ref_count = km_refs_arr[ref_index];
-    if (ref_count != 0)  {
-      printf("- pa: %p index: %d count: %d\n", mem_start, ref_index, ref_count);
-    }
-  }
-}
-
-void increment_km_ref(uint64 pa)  {
-  int index = pa_to_km_ref_index(pa);
-  if (index < 0)
-    return;
-
-  if (pa == 0x87f6b000) {
-    printf("");
-  }
-    
-  ++(km_refs_arr[index]);
-}
-
-void decrease_km_ref(uint64 pa) {
-  int index = pa_to_km_ref_index(pa);
-  if (index < 0)
-    return;
-
-  if (pa == 0x87f6b000) {
-    printf("");
-  }
-
-  int refs = --km_refs_arr[index];
-  if (refs < 0) {
-    panic("decrease_km_ref");
-  }
-}
 
 /*
  * create a direct-map page table for the kernel.
@@ -489,8 +431,8 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     if ((old_flags & PTE_C) != 0) {
       // handle cow
       if ((pa0 = handle_cow(pagetable, va0, pa0)) == 0) {
-        printf("copyout: handle_cow error");
-        exit(-1);
+        printf("copyout: handle_cow error\n");
+        return -1;
       }
       
     } else if((old_flags & PTE_W) == 0)
@@ -591,7 +533,7 @@ void print_omit_symbol(int level) {
 void print_pte(pte_t pte, int level, int index) {
   uint64 pa = PTE2PA(pte);
   print_omit_symbol(level);
-  printf("%d: pte %p pa ref %p\n", index, pte, pa, km_refs_arr[pa_to_km_ref_index(pa)]);
+  printf("%d: pte %p pa\n", index, pte, pa);
 }
 
 void vmprint_inner(pagetable_t pagetable, int level){

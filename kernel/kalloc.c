@@ -9,12 +9,20 @@
 #include "riscv.h"
 #include "defs.h"
 
+#define char_size (1 << 8) - 1 
+
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
-extern char km_refs_arr[]; // defined in vm.c
+struct {
+  // 存在两种并发场景
+  // 同一 CPU 下，interrupt 带来的临界区访问
+  // 不同 CPU 下，对共享对象的访问
+  struct spinlock lock;
+  char arr[MAX_KM_SPACE / PGSIZE]; // 32768 个索引，只用于记录 [KERNBASE, PHYSTOP) 之间的物理页的引用
+} km_refs;
 
 struct run {
   struct run *next;
@@ -29,6 +37,7 @@ void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  initlock(&km_refs.lock, "krefs");
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -57,10 +66,15 @@ kfree(void *pa)
   if (ref_index == -1)
     panic("kfree: ref_index"); // set illegal pa to free which does't belong to free list
 
-  if ((km_refs_arr[ref_index] != 0)) {
-    // printf("ref_index: %d ref: %d\n", ref_index, km_refs_arr[ref_index]);
+  
+  acquire(&km_refs.lock);
+
+  if ((km_refs.arr[ref_index] != 0)) {
+    release(&km_refs.lock);
     return; // there are still other processes to have this memory
   }
+  release(&km_refs.lock);
+
   
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
@@ -108,4 +122,64 @@ kamountOfFreeB(void) {
   release(&kmem.lock);
 
   return total_size;
+}
+
+int pa_to_km_ref_index(uint64 pa)
+{
+  if (pa < (uint64)end || pa >= PHYSTOP) {
+    return -1; // 只对 [end, PHYSTOP) 中的 mem 更新 refs
+  }
+  if ((PGROUNDDOWN(pa) - KERNBASE) < 0) 
+    panic("pa_to_km_ref_index");
+
+  return (PGROUNDDOWN(pa) - KERNBASE) / PGSIZE;
+}
+
+void print_km_refs() 
+{
+  uint64 mem_start;
+  printf("------------------ print_km_refs ------------------ \n");
+  for (mem_start = (uint64)end; mem_start < PHYSTOP; mem_start+=PGSIZE)
+  {
+    int ref_index = pa_to_km_ref_index(mem_start);
+
+    acquire(&km_refs.lock);
+
+    int ref_count = km_refs.arr[ref_index];
+    if (ref_count != 0)  {
+      printf("- pa: %p index: %d count: %d\n", mem_start, ref_index, ref_count);
+    }
+
+    release(&km_refs.lock);
+  }
+}
+
+void increment_km_ref(uint64 pa)  {
+  int index = pa_to_km_ref_index(pa);
+  if (index < 0)
+    return;
+
+  acquire(&km_refs.lock);
+
+  int ref_count = (int)(km_refs.arr[index]) + 1;
+  if (ref_count > char_size)
+    panic("increment_km_ref");
+  km_refs.arr[index] = ref_count;
+
+  release(&km_refs.lock);
+}
+
+void decrease_km_ref(uint64 pa) {
+  int index = pa_to_km_ref_index(pa);
+  if (index < 0)
+    return;
+
+  acquire(&km_refs.lock);
+  
+  int ref_count = (int)(km_refs.arr[index]) - 1;
+  if (ref_count < 0)
+    panic("decrease_km_ref");
+  km_refs.arr[index] = ref_count;
+
+  release(&km_refs.lock);
 }
