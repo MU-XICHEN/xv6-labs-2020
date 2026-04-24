@@ -22,6 +22,8 @@ extern char trampoline[]; // trampoline.S
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
+extern char km_refs_arr[MAX_KM_SPACE / PGSIZE];
+
 
 /*
  * create a direct-map page table for the kernel.
@@ -210,13 +212,22 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     
     uint64 pa = PTE2PA(*pte);
 
-    acquire(&km_refs_lock);
     *pte = 0;
+
+    acquire(&km_refs_lock);
+
     decrease_km_ref(pa); // 映射减少的时候，减少 ref
+
+    if ((km_refs_arr[pa_to_km_ref_index((uint64)pa)] != 0)) {
+      release(&km_refs_lock);
+      continue;
+    }
+
+    release(&km_refs_lock);
+    
     if(do_free){
       kfree((void*)pa);
     }
-    release(&km_refs_lock);
   }
 }
 

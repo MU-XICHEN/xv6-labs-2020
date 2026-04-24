@@ -16,13 +16,8 @@ extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
 struct spinlock km_refs_lock;
+char km_refs_arr[MAX_KM_SPACE / PGSIZE]; // 32768 个索引，只用于记录 [KERNBASE, PHYSTOP) 之间的物理页的引用
 
-struct {
-  // 存在两种并发场景
-  // 同一 CPU 下，interrupt 带来的临界区访问
-  // 不同 CPU 下，对共享对象的访问
-  char arr[MAX_KM_SPACE / PGSIZE]; // 32768 个索引，只用于记录 [KERNBASE, PHYSTOP) 之间的物理页的引用
-} km_refs;
 
 struct run {
   struct run *next;
@@ -62,21 +57,14 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
-  int ref_index = pa_to_km_ref_index((uint64)pa);
-  if (ref_index == -1)
-    panic("kfree: ref_index"); // set illegal pa to free which does't belong to free list
-
-
-  if ((km_refs.arr[ref_index] != 0)) {
-    return; // there are still other processes to have this memory
-  }
-
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
   r = (struct run*)pa;
 
   acquire(&kmem.lock);
+  if ((uint64)r == (uint64)(kmem.freelist))
+    panic("bomb!");
   r->next = kmem.freelist;
   kmem.freelist = r;
   release(&kmem.lock);
@@ -143,7 +131,7 @@ void print_km_refs()
 
     acquire(&km_refs_lock);
 
-    int ref_count = km_refs.arr[ref_index];
+    int ref_count = km_refs_arr[ref_index];
     if (ref_count != 0)  {
       printf("- pa: %p index: %d count: %d\n", mem_start, ref_index, ref_count);
     }
@@ -157,10 +145,10 @@ void increment_km_ref(uint64 pa)  {
   if (index < 0)
     return;
 
-  int ref_count = (int)(km_refs.arr[index]) + 1;
+  int ref_count = (int)(km_refs_arr[index]) + 1;
   if (ref_count > char_size)
     panic("increment_km_ref");
-  km_refs.arr[index] = ref_count;
+  km_refs_arr[index] = ref_count;
 
 }
 
@@ -169,9 +157,9 @@ void decrease_km_ref(uint64 pa) {
   if (index < 0)
     return;
 
-  int ref_count = (int)(km_refs.arr[index]) - 1;
+  int ref_count = (int)(km_refs_arr[index]) - 1;
   if (ref_count < 0)
     panic("decrease_km_ref");
-  km_refs.arr[index] = ref_count;
+  km_refs_arr[index] = ref_count;
 
 }
