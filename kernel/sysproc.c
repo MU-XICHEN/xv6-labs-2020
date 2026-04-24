@@ -95,3 +95,11 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+
+uint64 sys_logdebug(void)
+{
+  // kamountOfFreeB();
+  printf("");
+  return 0;
+}
