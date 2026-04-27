@@ -87,7 +87,7 @@ pipewrite(struct pipe *pi, uint64 addr, int n)
         release(&pi->lock);
         return -1;
       }
-      wakeup(&pi->nread);
+      wakeup(&pi->nread); // 先唤醒 read 消费一部分内容，然后再等待唤醒进行写入
       sleep(&pi->nwrite, &pi->lock);
     }
     if(copyin(pr->pagetable, &ch, addr + i, 1) == -1)

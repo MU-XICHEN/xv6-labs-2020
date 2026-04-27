@@ -124,7 +124,7 @@ found:
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
-  p->context.ra = (uint64)forkret;
+  p->context.ra = (uint64)forkret; // 跳转到 forkret
   p->context.sp = p->kstack + PGSIZE;
 
   return p;
@@ -403,6 +403,7 @@ wait(uint64 addr)
 
   // hold p->lock for the whole time to avoid lost
   // wakeups from a child's exit().
+  // [songsong]: 子进程 exit 的时候也会 acquire parent->lock
   acquire(&p->lock);
 
   for(;;){
@@ -412,9 +413,16 @@ wait(uint64 addr)
       // this code uses np->parent without holding np->lock.
       // acquiring the lock first would cause a deadlock,
       // since np might be an ancestor, and we already hold p->lock.
+      // [songsong]: 按道理来说，访问共享数据的时候因该 acquire lock 进行保护
+      // 但是，这里可能 np 是一个祖先，这个时候正在 wait p 去退出，此时也 acquire np->lock 对应的锁
+      // 这里再去 acquire 就重复 acquire 了
       if(np->parent == p){
         // np->parent can't change between the check and the acquire()
         // because only the parent changes it, and we're the parent.
+        // [songsong]: 这里能保证的是，（1）只要 p 就是 np 的parent的话
+        // check 和 下面 acquire 之间不会出现场景改变 np->parent ，因为只有 parent 本身才可以改变
+        // （2）即使 np 本来不是 p 的parent，比较期间又是了（汇编指令期间）
+        // 此时会错过这个判断，后面会将回收交给 initproc 程序
         acquire(&np->lock);
         havekids = 1;
         if(np->state == ZOMBIE){
