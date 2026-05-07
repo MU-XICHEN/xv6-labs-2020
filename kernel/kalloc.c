@@ -82,8 +82,9 @@ kfree(void *pa)
 
   push_off();
   int id = cpuid();
+  pop_off(); // 即使之后切换到另一个 CPU 执行，也不会有问题，kmems[id] 访问的依旧是有效的 freelist
+
   acquire(&kmems[id].lock);
-  pop_off();
 
   r->next = kmems[id].freelist;
   kmems[id].freelist = r;
@@ -96,15 +97,11 @@ kfree(void *pa)
 void *
 kalloc(void)
 {
-  push_off(); // 保证 kalloc 期间，id 始终指向当前进程的 CPU，不会因为 timer 切换到 其他 CPU，而导致 id 与 cpu 不一致
-
+  push_off();
   int id = cpuid();
+  pop_off();
 
   acquire(&kmems[id].lock); // acquire 之后也不会切进程，同时阻止多 CPU 之间的竞态
-  // 不用完全包裹，如果没找到，在进行 steal 的时候，不用关心当前运行的 cpu 是谁
-  // 因此，在 release 之后，允许进程 切换到 其他 CPU 执行
-  pop_off(); 
-  
 
   struct run *r;
   r = kmems[id].freelist;
