@@ -21,12 +21,13 @@ initsleeplock(struct sleeplock *lk, char *name)
 void
 acquiresleep(struct sleeplock *lk)
 {
-  acquire(&lk->lk);
-  while (lk->locked) {
-    sleep(lk, &lk->lk);
+  // 用 spinlock 来保护 sleeplock 中的状态
+  acquire(&lk->lk); // 同时获取这个 sleeplock 的时候，使得其他进程自旋
+  while (lk->locked) { 
+    sleep(lk, &lk->lk); //没有获得这个锁的进程，则进行睡眠，同时释放自旋锁
   }
-  lk->locked = 1;
-  lk->pid = myproc()->pid;
+  lk->locked = 1; // 先获得自旋锁的进程获得该 sleeplock
+  lk->pid = myproc()->pid; // 同上
   release(&lk->lk);
 }
 
