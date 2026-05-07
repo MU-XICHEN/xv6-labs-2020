@@ -60,6 +60,17 @@ bget(uint dev, uint blockno)
 {
   struct buf *b;
 
+  // 这个锁保证了 检查是否存在 和 如果不存在则占坑 这两个动作的不变性
+  // bget 试图获取扇区号 blockno 对应的内容
+  // 如果两个进程都在获取 blockno 2 的扇区内容
+  // 第一个进程在查找完后不存在对应的 buffer 时，直接 release
+  // 在占位 acquire lock 之前，另一个进程也调用了 bget
+  // 因为没有被第一个进程占位，所以 扇区 2 对应的 buffer 也不存
+  // 然后进程 2 进行了占位，之后返回给 进程 1，由于进程 1 已经结束查找过程
+  // 所以又会进行新的展位，导致扇区 2 在 buffer 中存在两份
+  // 综上，bcache lock 保证了两个动作的不变性
+  // bcache.lock 保护了对 blocks 对象的缓存
+  // block->lock 保护了对 block content 的读写
   acquire(&bcache.lock);
 
   // Is the block already cached?
@@ -81,6 +92,10 @@ bget(uint dev, uint blockno)
       b->valid = 0;
       b->refcnt = 1;
       release(&bcache.lock);
+      // 这里虽然释放了 bcache lock，但是由于 refcnt 已经被设置
+      // 能保证 该 buffer 和 block 已经绑定，而不会去重新绑定到一个不同的 disk block 上
+      // 即使此时，另一个进程也需要获取该扇区，使得 refcnt++，同时 acquire 了 b->block
+      // 等回来的时候，当前进程也会因为 acquiresleep 等待，而保持 b content 的不变性
       acquiresleep(&b->lock);
       return b;
     }
