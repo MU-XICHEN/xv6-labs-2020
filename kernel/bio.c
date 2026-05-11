@@ -58,6 +58,7 @@ binit(void)
 void remove4old_ifneed(struct buf* buf) {
 
     int b_index = buf->bucket_index;
+    buf->bucket_index = 0;
 
     struct buf* it_buf = cached_buckets[b_index];
 
@@ -113,37 +114,53 @@ void add2new_bucket(struct buf *buf, uint64 target_buk_idx) {
   }
 }
 
-// Look through buffer cache for block on device dev.
-// If not found, allocate a buffer.
-// In either case, return locked buffer.
 static struct buf*
 bget(uint dev, uint blockno)
 {
   struct buf *b;
-  int target_buks_idx = blockno % BUCKET_NUM;
+  int target_idx = blockno % BUCKET_NUM;
 
-  acquire(&bcache.lock);
+  // --- 阶段 1: 在目标桶中查找 ---
+  acquire(&bucket_locks[target_idx]);
 
-  b = cached_buckets[target_buks_idx];
-
-  // Is the block already cached?
+  b = cached_buckets[target_idx];
   while(b) {
     if(b->dev == dev && b->blockno == blockno){
       b->refcnt++;
-      release(&bcache.lock);
+      release(&bucket_locks[target_idx]);
+      acquiresleep(&b->lock);
+      return b;
+    }
+    b = b->next;
+  }
+  
+  // 目标桶没找到，准备驱逐。释放桶锁，避免死锁
+  release(&bucket_locks[target_idx]);
 
+  // --- 阶段 2: 驱逐流程 ---
+  // 这里使用全局锁来进行加锁序列化，避免 A -> B 以及 B -> A 导致死锁，通过全局锁，可以保证 A -> B 和 B -> A 完整先后进行
+  acquire(&bcache.lock);
+
+  // ❗❗❗拿回目标桶锁后，必须再次检查，防止在释放锁期间其他 CPU 已经加载了该块
+  acquire(&bucket_locks[target_idx]);
+  b = cached_buckets[target_idx];
+  while(b) {
+    if(b->dev == dev && b->blockno == blockno){
+      b->refcnt++;
+      release(&bucket_locks[target_idx]);
+      release(&bcache.lock);
       acquiresleep(&b->lock);
       return b;
     }
     b = b->next;
   }
 
-  // Not cached.
-
   struct buf *new_b = 0;
-  uint min_ticks = 10000;
+  uint min_ticks = 0xffffffff;
 
+  // 全局寻找最久未使用的 buf
   for(b = global_buf; b < global_buf+NBUF; b++){
+    // 这里对 refcnt 的检查受 bcache.lock 保护，虽然不完美但能跑通
     if(b->refcnt == 0) {
       if (b->ticks < min_ticks) {
         new_b = b;
@@ -152,22 +169,18 @@ bget(uint dev, uint blockno)
     }
   }
 
-
   if (new_b) {
-    /**
-     * 情况 1：加入到了其他桶；
-     * 情况 2：已经存在于当前桶中
-     */
-    if (new_b->blockno != 0) {
-      uint old_b_index = new_b->bucket_index;
-      if (old_b_index != target_buks_idx) {               // 情况 1：现在在其他桶中
-        // remove
-        remove4old_ifneed(new_b);
-        
-        // add
-        add2new_bucket(new_b, target_buks_idx);
-      }
-      // 情况 2：已经存在于当前桶中
+    uint old_idx = new_b->bucket_index;
+
+    if (old_idx != target_idx) {
+      // 跨桶迁移：必须持有旧桶锁
+      acquire(&bucket_locks[old_idx]);
+      remove4old_ifneed(new_b); // 从旧桶移除
+      release(&bucket_locks[old_idx]);
+      
+      add2new_bucket(new_b, target_idx); // 加入新桶
+    } else {
+      // 如果 new_b 就在当前桶，只需修改身份，无需移动链表
     }
 
     new_b->dev = dev;
@@ -175,12 +188,15 @@ bget(uint dev, uint blockno)
     new_b->valid = 0;
     new_b->refcnt = 1;
 
+    release(&bucket_locks[target_idx]);
     release(&bcache.lock);
 
     acquiresleep(&new_b->lock);
     return new_b;
   }
   
+  release(&bucket_locks[target_idx]);
+  release(&bcache.lock);
   panic("bget: no buffers");
 }
 
@@ -207,8 +223,6 @@ bwrite(struct buf *b)
   virtio_disk_rw(b, 1);
 }
 
-// Release a locked buffer.
-// Move to the head of the most-recently-used list.
 void
 brelse(struct buf *b)
 {
@@ -217,28 +231,28 @@ brelse(struct buf *b)
 
   releasesleep(&b->lock);
 
-  acquire(&bcache.lock);
+  // 为什么对 bucket_index 的访问不用加锁? 
+  uint idx = b->bucket_index;
+  acquire(&bucket_locks[idx]);
   b->refcnt--;
   if (b->refcnt == 0) {
-    // no one is waiting for it.
-    b->ticks++;
+    b->ticks++; 
   }
-  release(&bcache.lock);
-
+  release(&bucket_locks[idx]);
 }
 
 void
 bpin(struct buf *b) {
-  acquire(&bcache.lock);
+  uint idx = b->bucket_index;
+  acquire(&bucket_locks[idx]);
   b->refcnt++;
-  release(&bcache.lock);
+  release(&bucket_locks[idx]);
 }
 
 void
 bunpin(struct buf *b) {
-  acquire(&bcache.lock);
+  uint idx = b->bucket_index;
+  acquire(&bucket_locks[idx]);
   b->refcnt--;
-  release(&bcache.lock);
+  release(&bucket_locks[idx]);
 }
-
-
