@@ -67,7 +67,7 @@ void remove4old_ifneed(struct buf* buf) {
       if (it_buf->next) {
         it_buf->next->prev = 0;
       }
-      buckets[b_index] = it_buf->next;
+      cached_buckets[b_index] = it_buf->next;
 
       it_buf->prev = 0;
       it_buf->next = 0;
@@ -100,13 +100,13 @@ void add2new_bucket(struct buf *buf) {
 
   if (it_buf == 0) {
     // 空桶
-    buckets[b_index] = buf;
+    cached_buckets[b_index] = buf;
   } else {
     buf->prev = 0;
-    buf->next = buckets[b_index];
+    buf->next = cached_buckets[b_index];
 
-    buckets[b_index]->prev = buf;
-    buckets[b_index] = buf;
+    cached_buckets[b_index]->prev = buf;
+    cached_buckets[b_index] = buf;
   }
 }
 
