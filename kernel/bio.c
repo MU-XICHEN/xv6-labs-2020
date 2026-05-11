@@ -25,7 +25,7 @@
 
 #define BUCKET_NUM          13
 
-struct buf* buckets[BUCKET_NUM];
+struct buf* cached_buckets[BUCKET_NUM];
 struct spinlock bucket_locks[BUCKET_NUM];
 struct buf global_buf[NBUF];
 
@@ -54,7 +54,7 @@ void remove4old_ifneed(struct buf* buf) {
 
     int b_index = buf->blockno % BUCKET_NUM;
 
-    struct buf* it_buf = buckets[b_index];
+    struct buf* it_buf = cached_buckets[b_index];
 
     if (it_buf == 0)
       panic("remove4old_ifneed: empty bucket");
@@ -96,7 +96,7 @@ void remove4old_ifneed(struct buf* buf) {
 
 void add2new_bucket(struct buf *buf) {
   int b_index = buf->blockno % BUCKET_NUM;
-  struct buf* it_buf = buckets[b_index];
+  struct buf* it_buf = cached_buckets[b_index];
 
   if (it_buf == 0) {
     // 空桶
