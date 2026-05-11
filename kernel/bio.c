@@ -232,6 +232,8 @@ brelse(struct buf *b)
   releasesleep(&b->lock);
 
   // 为什么对 bucket_index 的访问不用加锁? 
+  // 只有在 refcnt == 0 的时候才有进程来驱逐 b，使其转向到另一个桶
+  // 而在访问 brelse 时，表示 b 当前至少被一个宿主持有，因此可以安全访问
   uint idx = b->bucket_index;
   acquire(&bucket_locks[idx]);
   b->refcnt--;
