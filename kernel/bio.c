@@ -26,7 +26,7 @@
 #define BUCKET_NUM          13
 
 struct buf* cached_buckets[BUCKET_NUM];
-struct spinlock bucket_locks[BUCKET_NUM]; // 用于保持 cached_buckets 的链表原子性
+struct spinlock bucket_locks[BUCKET_NUM];
 struct buf global_buf[NBUF];
 
 struct {
