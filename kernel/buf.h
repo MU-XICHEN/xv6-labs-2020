@@ -1,13 +1,17 @@
 struct buf {
-  int valid;   // has data been read from disk?
+  // lock 只保护 data 的读写
+  struct sleeplock lock;
+  uchar data[BSIZE];
+
+  // 以下内容由 bcache lock 保护
+  // 以下内容表示 buffer cache 状态的全局一致性
+  uint ticks;
   int disk;    // does disk "own" buf?
   uint dev;
+  int valid;   // has data been read from disk?
   uint blockno;
-  struct sleeplock lock;
   uint refcnt;
-  uint ticks;
   struct buf *prev; // LRU cache list
   struct buf *next;
-  uchar data[BSIZE];
 };
 

@@ -26,7 +26,7 @@
 #define BUCKET_NUM          13
 
 struct buf* cached_buckets[BUCKET_NUM];
-struct spinlock bucket_locks[BUCKET_NUM];
+struct spinlock bucket_locks[BUCKET_NUM]; // 用于保持 cached_buckets 的链表原子性
 struct buf global_buf[NBUF];
 
 struct {
@@ -94,19 +94,18 @@ void remove4old_ifneed(struct buf* buf) {
     panic("remove4old_ifneed: not exist");
 }
 
-void add2new_bucket(struct buf *buf) {
-  int b_index = buf->blockno % BUCKET_NUM;
-  struct buf* it_buf = cached_buckets[b_index];
+void add2new_bucket(struct buf *buf, uint64 target_buk_idx) {
+  struct buf* it_buf = cached_buckets[target_buk_idx];
 
   if (it_buf == 0) {
     // 空桶
-    cached_buckets[b_index] = buf;
+    cached_buckets[target_buk_idx] = buf;
   } else {
     buf->prev = 0;
-    buf->next = cached_buckets[b_index];
+    buf->next = cached_buckets[target_buk_idx];
 
-    cached_buckets[b_index]->prev = buf;
-    cached_buckets[b_index] = buf;
+    cached_buckets[target_buk_idx]->prev = buf;
+    cached_buckets[target_buk_idx] = buf;
   }
 }
 
@@ -117,28 +116,23 @@ static struct buf*
 bget(uint dev, uint blockno)
 {
   struct buf *b;
+  int target_buks_idx = blockno % BUCKET_NUM;
 
-  // 这个锁保证了 检查是否存在 和 如果不存在则占坑 这两个动作的不变性
-  // bget 试图获取扇区号 blockno 对应的内容
-  // 如果两个进程都在获取 blockno 2 的扇区内容
-  // 第一个进程在查找完后不存在对应的 buffer 时，直接 release
-  // 在占位 acquire lock 之前，另一个进程也调用了 bget
-  // 因为没有被第一个进程占位，所以 扇区 2 对应的 buffer 也不存
-  // 然后进程 2 进行了占位，之后返回给 进程 1，由于进程 1 已经结束查找过程
-  // 所以又会进行新的展位，导致扇区 2 在 buffer 中存在两份
-  // 综上，bcache lock 保证了两个动作的不变性
-  // bcache.lock 保护了对 blocks 对象的缓存
-  // block->lock 保护了对 block content 的读写
   acquire(&bcache.lock);
+  acquire(&bucket_locks[target_buks_idx]);
 
+  b = cached_buckets[target_buks_idx];
   // Is the block already cached?
-  for(b = global_buf; b < global_buf+NBUF; b++){
+  while(b) {
     if(b->dev == dev && b->blockno == blockno){
       b->refcnt++;
+      release(&bucket_locks[target_buks_idx]);
       release(&bcache.lock);
+
       acquiresleep(&b->lock);
       return b;
     }
+    b = b->next;
   }
 
   struct buf *new_b = 0;
@@ -156,10 +150,32 @@ bget(uint dev, uint blockno)
   }
 
   if (new_b) {
+    /**
+     * 情况 1：没有被加到任何桶中过；
+     * 情况 2：加入到了其他桶；
+     * 情况 3：已经存在于当前桶中
+     */
+    if ((new_b->dev == 0) && (new_b->blockno == 0)) { // 情况 1：没有被缓存到任何一个桶中
+      add2new_bucket(new_b, target_buks_idx);
+    } else if (new_b->blockno != 0) {
+      uint new_b_idex = new_b->blockno % BUCKET_NUM;
+      if (new_b_idex != target_buks_idx) { // 情况 2：现在在其他桶中
+        // remove
+        acquire(&bucket_locks[new_b_idex]);
+        remove4old_ifneed(new_b);
+        release(&bucket_locks[new_b_idex]);
+        // add
+        add2new_bucket(new_b, target_buks_idx);
+      }
+      // 情况 3：已经存在于当前桶中 -> do nothing
+    }
+
     new_b->dev = dev;
     new_b->blockno = blockno;
     new_b->valid = 0;
     new_b->refcnt = 1;
+
+    release(&bucket_locks[target_buks_idx]);
     release(&bcache.lock);
 
     acquiresleep(&new_b->lock);
