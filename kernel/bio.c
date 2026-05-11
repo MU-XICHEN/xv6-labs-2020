@@ -33,10 +33,13 @@ struct {
   struct spinlock lock;
 } bcache;
 
+void add2new_bucket(struct buf *buf, uint64 target_buk_idx);
+
 void
 binit(void)
 {
   struct buf *b;
+  uint i;
 
   initlock(&bcache.lock, "bcache");
 
@@ -45,22 +48,21 @@ binit(void)
     initlock(&bucket_locks[i], "bcache_buckets");
   }
 
-  for(b = global_buf; b < global_buf+NBUF; b++){
+  for(i = 0, b = global_buf; b < global_buf+NBUF; b++, i++){
     initsleeplock(&b->lock, "buffer");
+    uint idx = i % BUCKET_NUM;
+    add2new_bucket(b, idx);
   }
 }
 
 void remove4old_ifneed(struct buf* buf) {
 
-    int b_index = buf->blockno % BUCKET_NUM;
+    int b_index = buf->bucket_index;
 
     struct buf* it_buf = cached_buckets[b_index];
 
     if (it_buf == 0)
       panic("remove4old_ifneed: empty bucket");
-
-    buf->dev = 0;
-    buf->blockno = 0;
 
     if (it_buf == buf) {
       // 第一个就是，特殊处理
@@ -95,6 +97,8 @@ void remove4old_ifneed(struct buf* buf) {
 }
 
 void add2new_bucket(struct buf *buf, uint64 target_buk_idx) {
+  buf->bucket_index = target_buk_idx;
+
   struct buf* it_buf = cached_buckets[target_buk_idx];
 
   if (it_buf == 0) {
@@ -119,14 +123,13 @@ bget(uint dev, uint blockno)
   int target_buks_idx = blockno % BUCKET_NUM;
 
   acquire(&bcache.lock);
-  acquire(&bucket_locks[target_buks_idx]);
 
   b = cached_buckets[target_buks_idx];
+
   // Is the block already cached?
   while(b) {
     if(b->dev == dev && b->blockno == blockno){
       b->refcnt++;
-      release(&bucket_locks[target_buks_idx]);
       release(&bcache.lock);
 
       acquiresleep(&b->lock);
@@ -135,11 +138,11 @@ bget(uint dev, uint blockno)
     b = b->next;
   }
 
+  // Not cached.
+
   struct buf *new_b = 0;
   uint min_ticks = 10000;
 
-  // Not cached.
-  // Recycle the least recently used (LRU) unused buffer.
   for(b = global_buf; b < global_buf+NBUF; b++){
     if(b->refcnt == 0) {
       if (b->ticks < min_ticks) {
@@ -149,25 +152,22 @@ bget(uint dev, uint blockno)
     }
   }
 
+
   if (new_b) {
     /**
-     * 情况 1：没有被加到任何桶中过；
-     * 情况 2：加入到了其他桶；
-     * 情况 3：已经存在于当前桶中
+     * 情况 1：加入到了其他桶；
+     * 情况 2：已经存在于当前桶中
      */
-    if ((new_b->dev == 0) && (new_b->blockno == 0)) { // 情况 1：没有被缓存到任何一个桶中
-      add2new_bucket(new_b, target_buks_idx);
-    } else if (new_b->blockno != 0) {
-      uint new_b_idex = new_b->blockno % BUCKET_NUM;
-      if (new_b_idex != target_buks_idx) { // 情况 2：现在在其他桶中
+    if (new_b->blockno != 0) {
+      uint old_b_index = new_b->bucket_index;
+      if (old_b_index != target_buks_idx) {               // 情况 1：现在在其他桶中
         // remove
-        acquire(&bucket_locks[new_b_idex]);
         remove4old_ifneed(new_b);
-        release(&bucket_locks[new_b_idex]);
+        
         // add
         add2new_bucket(new_b, target_buks_idx);
       }
-      // 情况 3：已经存在于当前桶中 -> do nothing
+      // 情况 2：已经存在于当前桶中
     }
 
     new_b->dev = dev;
@@ -175,7 +175,6 @@ bget(uint dev, uint blockno)
     new_b->valid = 0;
     new_b->refcnt = 1;
 
-    release(&bucket_locks[target_buks_idx]);
     release(&bcache.lock);
 
     acquiresleep(&new_b->lock);
@@ -224,8 +223,8 @@ brelse(struct buf *b)
     // no one is waiting for it.
     b->ticks++;
   }
-  
   release(&bcache.lock);
+
 }
 
 void
