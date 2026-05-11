@@ -23,14 +23,14 @@
 #include "fs.h"
 #include "buf.h"
 
+#define BUCKET_NUM          13
+
+struct buf* buckets[BUCKET_NUM];
+struct spinlock bucket_locks[BUCKET_NUM];
+struct buf global_buf[NBUF];
+
 struct {
   struct spinlock lock;
-  struct buf buf[NBUF];
-
-  // Linked list of all buffers, through prev/next.
-  // Sorted by how recently the buffer was used.
-  // head.next is most recent, head.prev is least.
-  struct buf head;
 } bcache;
 
 void
@@ -40,15 +40,73 @@ binit(void)
 
   initlock(&bcache.lock, "bcache");
 
-  // Create linked list of buffers
-  bcache.head.prev = &bcache.head;
-  bcache.head.next = &bcache.head;
-  for(b = bcache.buf; b < bcache.buf+NBUF; b++){
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
+  for (int i = 0; i < BUCKET_NUM; i++)
+  {
+    initlock(&bucket_locks[i], "bcache_buckets");
+  }
+
+  for(b = global_buf; b < global_buf+NBUF; b++){
     initsleeplock(&b->lock, "buffer");
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
+  }
+}
+
+void remove4old_ifneed(struct buf* buf) {
+
+    int b_index = buf->blockno % BUCKET_NUM;
+
+    struct buf* it_buf = buckets[b_index];
+
+    if (it_buf == 0)
+      panic("remove4old_ifneed: empty bucket");
+
+    buf->dev = 0;
+    buf->blockno = 0;
+
+    if (it_buf == buf) {
+      // 第一个就是，特殊处理
+      if (it_buf->next) {
+        it_buf->next->prev = 0;
+      }
+      buckets[b_index] = it_buf->next;
+
+      it_buf->prev = 0;
+      it_buf->next = 0;
+      return;
+    }
+
+    // 从第二个开始是，则从链表中移除
+    it_buf = it_buf->next;
+    while (it_buf)
+    {
+      if (it_buf == buf) {
+        if (it_buf->next) {
+          it_buf->next->prev = it_buf->prev;
+        }
+        it_buf->prev->next = it_buf->next;
+
+        it_buf->prev = 0;
+        it_buf->next = 0;
+        return;
+      }
+      it_buf = it_buf->next;
+    }
+
+    panic("remove4old_ifneed: not exist");
+}
+
+void add2new_bucket(struct buf *buf) {
+  int b_index = buf->blockno % BUCKET_NUM;
+  struct buf* it_buf = buckets[b_index];
+
+  if (it_buf == 0) {
+    // 空桶
+    buckets[b_index] = buf;
+  } else {
+    buf->prev = 0;
+    buf->next = buckets[b_index];
+
+    buckets[b_index]->prev = buf;
+    buckets[b_index] = buf;
   }
 }
 
@@ -74,7 +132,7 @@ bget(uint dev, uint blockno)
   acquire(&bcache.lock);
 
   // Is the block already cached?
-  for(b = bcache.head.next; b != &bcache.head; b = b->next){
+  for(b = global_buf; b < global_buf+NBUF; b++){
     if(b->dev == dev && b->blockno == blockno){
       b->refcnt++;
       release(&bcache.lock);
@@ -83,23 +141,31 @@ bget(uint dev, uint blockno)
     }
   }
 
+  struct buf *new_b = 0;
+  uint min_ticks = 10000;
+
   // Not cached.
   // Recycle the least recently used (LRU) unused buffer.
-  for(b = bcache.head.prev; b != &bcache.head; b = b->prev){
+  for(b = global_buf; b < global_buf+NBUF; b++){
     if(b->refcnt == 0) {
-      b->dev = dev;
-      b->blockno = blockno;
-      b->valid = 0;
-      b->refcnt = 1;
-      release(&bcache.lock);
-      // 这里虽然释放了 bcache lock，但是由于 refcnt 已经被设置
-      // 能保证 该 buffer 和 block 已经绑定，而不会去重新绑定到一个不同的 disk block 上
-      // 即使此时，另一个进程也需要获取该扇区，使得 refcnt++，同时 acquire 了 b->block
-      // 等回来的时候，当前进程也会因为 acquiresleep 等待，而保持 b content 的不变性
-      acquiresleep(&b->lock);
-      return b;
+      if (b->ticks < min_ticks) {
+        new_b = b;
+        min_ticks = b->ticks;
+      }
     }
   }
+
+  if (new_b) {
+    new_b->dev = dev;
+    new_b->blockno = blockno;
+    new_b->valid = 0;
+    new_b->refcnt = 1;
+    release(&bcache.lock);
+
+    acquiresleep(&new_b->lock);
+    return new_b;
+  }
+  
   panic("bget: no buffers");
 }
 
@@ -140,12 +206,7 @@ brelse(struct buf *b)
   b->refcnt--;
   if (b->refcnt == 0) {
     // no one is waiting for it.
-    b->next->prev = b->prev;
-    b->prev->next = b->next;
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
+    b->ticks++;
   }
   
   release(&bcache.lock);
