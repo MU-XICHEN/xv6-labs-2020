@@ -30,6 +30,18 @@
 //   ...
 // Log appends are synchronous.
 
+/**
+ * A typical use of the log in a system call looks like this:
+ * begin_op();            // 增加 outstanding；or 等待上一次 committing 结束
+ * ...
+ * bp = bread(...);       // 读取需要修改的 buf
+ * bp->data[...] = ...;   // 修改 buf cache
+ * log_write(bp);         // 将修改更新到内存 log 中
+ * ...
+ * end_op();              // 减少 outstanding；or commit();
+ *  
+ * */ 
+
 // Contents of the header block, used for both the on-disk header block
 // and to keep track in memory of logged block# before commit.
 struct logheader {
@@ -37,6 +49,7 @@ struct logheader {
   int block[LOGSIZE];
 };
 
+// 这个 log 存在于内存中，其中的 header 最终会写入到 bread(dev, start) 的 logheader 中
 struct log {
   struct spinlock lock;
   int start;
@@ -44,7 +57,7 @@ struct log {
   int outstanding; // how many FS sys calls are executing.
   int committing;  // in commit(), please wait.
   int dev;
-  struct logheader lh;
+  struct logheader lh; 
 };
 struct log log;
 
@@ -131,6 +144,10 @@ begin_op(void)
     if(log.committing){
       sleep(&log, &log.lock);
     } else if(log.lh.n + (log.outstanding+1)*MAXOPBLOCKS > LOGSIZE){
+      // log.lh.n 已经占掉的坑位
+      // log.outstanding 正在执行过程中的系统调用数量
+      // + 1 当前系统调用
+
       // this op might exhaust log space; wait for commit.
       sleep(&log, &log.lock);
     } else {
@@ -166,7 +183,9 @@ end_op(void)
   if(do_commit){
     // call commit w/o holding locks, since not allowed
     // to sleep with locks.
-    commit();
+    // 该进程写入磁盘时间很长，因此不能持有锁；否则的话，这个进程就会一直占用当前 CPU 的时间片
+    // 通过 committing 来对 log 访问进行控制
+    commit(); 
     acquire(&log.lock);
     log.committing = 0;
     wakeup(&log);
@@ -226,7 +245,7 @@ log_write(struct buf *b)
     if (log.lh.block[i] == b->blockno)   // log absorbtion
       break;
   }
-  log.lh.block[i] = b->blockno;
+  log.lh.block[i] = b->blockno; // 如果现在日志槽位已经存在这个 block，则覆盖掉
   if (i == log.lh.n) {  // Add new block to log?
     bpin(b);
     log.lh.n++;

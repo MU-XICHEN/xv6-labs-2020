@@ -67,7 +67,11 @@ bget(uint dev, uint blockno)
     if(b->dev == dev && b->blockno == blockno){
       b->refcnt++;
       release(&bcache.lock);
-      acquiresleep(&b->lock);
+      // 当多个进程希望同时获取 blockno 的buf 时，后续的会在这里进行等待
+      // 但是，此时 refcnt 是逐步增加了
+      // 等到进程依次获得了这个 buf，并对其内容进行了访问
+      // 后续逐步 brlease 释放了锁，并且减少了 refcnt，最终因为 buf 不够才被驱逐
+      acquiresleep(&b->lock); 
       return b;
     }
   }

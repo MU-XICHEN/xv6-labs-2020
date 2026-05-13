@@ -69,7 +69,9 @@ balloc(uint dev)
 
   bp = 0;
   for(b = 0; b < sb.size; b += BPB){
-    bp = bread(dev, BBLOCK(b, sb));
+    // (1) 效率：4096 个 bits 都在这次循环中进行处理
+    // (2) 安全：bread 本身会对返回的 buf 进行加锁(acquiresleep(&b->lock)
+    bp = bread(dev, BBLOCK(b, sb)); // bp 是包含 b 的 bitmap 的block
     for(bi = 0; bi < BPB && b + bi < sb.size; bi++){
       m = 1 << (bi % 8);
       if((bp->data[bi/8] & m) == 0){  // Is block free?
